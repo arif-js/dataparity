@@ -1,0 +1,75 @@
+{
+  "name": "dataparity",
+  "version": "0.1.0",
+  "mcpName": "io.github.arif-js/dataparity",
+  "description": "Cross-database data diff and reconciliation for AI agents, with a portable row hash",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "data-diff",
+    "data-quality",
+    "reconciliation",
+    "lineage",
+    "duckdb",
+    "postgres",
+    "mysql",
+    "sqlite",
+    "parquet",
+    "ci"
+  ],
+  "homepage": "https://github.com/arif-js/dataparity#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arif-js/dataparity.git"
+  },
+  "bugs": {
+    "url": "https://github.com/arif-js/dataparity/issues"
+  },
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.16.0"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "dataparity": "dist/interfaces/cli/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node -e \"require('fs').chmodSync('dist/interfaces/cli/index.js',0o755)\"",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "test": "vitest run test/unit",
+    "test:integration": "vitest run test/integration",
+    "test:all": "vitest run",
+    "test:audit": "node scripts/audit-features.mjs",
+    "prepublishOnly": "npm run lint && npm run typecheck && npm run test:all && npm run build",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@duckdb/node-api": "^1.5.6-r.1",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "mysql2": "^3.24.6",
+    "pg": "^8.23.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.15",
+    "@types/node": "^24.10.1",
+    "@types/pg": "^8.15.5",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
