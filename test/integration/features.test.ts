@@ -559,4 +559,106 @@ describe('cross-database', () => {
       await pg?.close();
     }
   });
+
+  it('gives the same answer at every bucket count', async () => {
+    // Regression: the expansion of a bucket once used a different bucket count
+    // on each side, so the two sides expanded different buckets and the diff
+    // reported thousands of rows that had not changed. Any explicit bucket
+    // count has to reach both sides.
+    const pg = await tryConnect(() => PostgresSource.connect({ connectionString: PG_CONNECTION }));
+    const my = await tryConnect(() => MysqlSource.connect(MYSQL_OPTIONS));
+    if (!pg || !my) {
+      console.warn('Skipping: databases are not reachable.');
+      return;
+    }
+    try {
+      await pg.query('drop table if exists xbc');
+      await pg.query('create table xbc(id int primary key, country text, amount double precision)');
+      await my.query('drop table if exists xbc');
+      await my.query('create table xbc(id int primary key, country varchar(20), amount double)');
+      const rows: Array<[number, string, number]> = [];
+      for (let id = 1; id <= 400; id++) rows.push([id, 'DE', id / 4]);
+      for (const [id, country, amount] of rows) {
+        await pg.query('insert into xbc values ($1,$2,$3)', [id, country, amount]);
+        await my.query('insert into xbc values (?,?,?)', [id, country, amount]);
+      }
+      // Change exactly three rows, spread across the key space.
+      for (const id of [7, 200, 393]) {
+        await my.query('update xbc set amount = ? where id = ?', [id / 4 + 1, id]);
+      }
+
+      for (const bucketCount of [64, 256, 1024, 4096]) {
+        const report = await diffTables(pg, 'public.xbc', my, 'xbc', {
+          keyColumns: ['id'],
+          bucketCount,
+        });
+        expect(report.summary.modified, `bucket count ${bucketCount}`).toBe(3);
+        expect(report.summary.added, `bucket count ${bucketCount}`).toBe(0);
+        expect(report.summary.removed, `bucket count ${bucketCount}`).toBe(0);
+      }
+    } finally {
+      await pg?.close();
+      await my?.close();
+    }
+  });
+
+  it('transfers only a small part of a large table when few rows differ', async () => {
+    // The point of the bucketed comparison is that a table with a handful of
+    // changed rows does not have to be moved in full. This measures it.
+    const pg = await tryConnect(() => PostgresSource.connect({ connectionString: PG_CONNECTION }));
+    if (!pg) {
+      console.warn('Skipping: Postgres is not reachable.');
+      return;
+    }
+    try {
+      await pg.query('drop table if exists xbig');
+      await pg.query('drop table if exists xbig2');
+      await pg.query(
+        'create table xbig(id int primary key, country text, amount double precision)',
+      );
+      await pg.query(
+        'create table xbig2(id int primary key, country text, amount double precision)',
+      );
+      await pg.query(
+        `insert into xbig select i, 'DE', (i % 100) / 7.0 from generate_series(1, 20000) g(i)`,
+      );
+      await pg.query(
+        `insert into xbig2 select i, 'DE', (i % 100) / 7.0 from generate_series(1, 20000) g(i)`,
+      );
+      await pg.query('update xbig2 set amount = amount + 1 where id in (11, 5000, 19000)');
+
+      // The right side is read through DuckDB, so the two sides are in
+      // different engines.
+      const duck = await DuckdbSource.open();
+      try {
+        await duck.query(
+          `attach 'host=localhost port=55432 dbname=difftest user=postgres password=test' as pg (type postgres, read_only)`,
+        );
+        await duck.query('create view xbig2 as select * from pg.public.xbig2');
+
+        let transferred = 0;
+        const original = duck.query.bind(duck);
+        duck.query = async (sql: string, params?: unknown[]) => {
+          const rows = await original(sql, params);
+          if (sql.includes('__hash')) transferred += rows.length;
+          return rows;
+        };
+
+        const report = await diffTables(pg, 'public.xbig', duck, 'xbig2', {
+          keyColumns: ['id'],
+        });
+        expect(report.summary.modified).toBe(3);
+        expect(report.summary.added).toBe(0);
+        expect(report.summary.removed).toBe(0);
+
+        // With the bucket count chosen from the table size, well under 5% of
+        // the table should move.
+        expect(transferred / 20000).toBeLessThan(0.05);
+      } finally {
+        await duck.close();
+      }
+    } finally {
+      await pg?.close();
+    }
+  });
 });

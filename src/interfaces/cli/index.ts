@@ -92,6 +92,7 @@ Diff options:
   --max-attributions <n> Maximum attribution segments to report (default 5)
   --sample               Compare only a sample of rows
   --sample-limit <n>     Rows to sample per side (default 100000)
+  --bucket-count <n>     Buckets for the cross-database comparison (default: from table size)
   --json                 Emit JSON instead of text
 
 Sources are configured in ~/.dataparity/config.json:
@@ -187,6 +188,7 @@ async function runDiff(args: Args): Promise<number> {
     maxAttributions: num(flags, 'max-attributions'),
     sampleOnly: flags.get('sample') === true,
     sampleLimit: num(flags, 'sample-limit'),
+    bucketCount: num(flags, 'bucket-count'),
   };
 
   try {

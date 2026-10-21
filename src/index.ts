@@ -29,11 +29,14 @@ export {
   VALUE_TAG,
 } from './core/canonical.js';
 export {
+  chooseBucketCount,
   compareSchemas,
   DEFAULT_MAX_ATTRIBUTIONS,
   DEFAULT_MAX_CHANGES,
   type DiffOptions,
   diffTables,
+  MAX_BUCKET_COUNT,
+  MIN_BUCKET_COUNT,
 } from './core/diff.js';
 export { openNamedSource, openSource } from './core/sources.js';
 export type {

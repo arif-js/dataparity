@@ -51,6 +51,13 @@ export interface DiffOptions {
   sampleOnly?: boolean;
   /** Maximum number of rows to examine per side when sampling. */
   sampleLimit?: number;
+  /**
+   * How many buckets the cross-database comparison divides the table into.
+   *
+   * Chosen from the table size by default. More buckets means a smaller
+   * transfer when few rows differ, and a more expensive aggregate query.
+   */
+  bucketCount?: number;
 }
 
 /** Default number of row changes included in a report. */
@@ -59,8 +66,49 @@ export const DEFAULT_MAX_CHANGES = 100;
 /** Default number of attributions computed. */
 export const DEFAULT_MAX_ATTRIBUTIONS = 5;
 
-/** Number of buckets used when comparing two different databases. */
-export const BUCKET_COUNT = 64;
+/**
+ * Default number of buckets used when comparing two different databases.
+ *
+ * The bucket count trades aggregate-query cost against transfer size. With
+ * `C` changed rows spread across the key space, the expected number of
+ * buckets touched is `min(B, C)`, and each bucket holds about `1/B` of the
+ * table, so the fraction of the table transferred is `min(B, C) / B`.
+ *
+ * At 64 buckets, a table with 10 changed rows transfers 10/64 = 15.6% of its
+ * rows. That is the number a measurement of a million-row table with ten
+ * changed rows produced, and it is not good enough — the whole point of the
+ * hash comparison is to move very little data.
+ *
+ * The count is therefore chosen from the table size: enough buckets that a
+ * small number of changed rows lands in a small fraction of the table, but
+ * not so many that the aggregate query becomes the bottleneck. The aggregate
+ * runs inside the database, where the data already is, so a larger count
+ * costs the database more than it costs the network.
+ */
+export const DEFAULT_BUCKET_COUNT = 4096;
+
+/** The bucket count is never smaller than this. */
+export const MIN_BUCKET_COUNT = 64;
+
+/** The bucket count is never larger than this. */
+export const MAX_BUCKET_COUNT = 65536;
+
+/**
+ * Chooses a bucket count for a table of the given size.
+ *
+ * The target is about a thousand rows per bucket: a bucket expansion then
+ * moves only that many rows per differing bucket, while the number of buckets
+ * stays high enough that a handful of changed rows is a small fraction of the
+ * table. The count is a power of two so the modulo is cheap.
+ */
+export function chooseBucketCount(rowCount: number): number {
+  if (rowCount <= 0) return MIN_BUCKET_COUNT;
+  // Aim for roughly 1000 rows per bucket, so a bucket expansion is cheap,
+  // but keep enough buckets that a few changed rows stay a small fraction.
+  const target = Math.ceil(rowCount / 1000);
+  const buckets = 1 << Math.ceil(Math.log2(Math.max(1, target)));
+  return Math.min(MAX_BUCKET_COUNT, Math.max(MIN_BUCKET_COUNT, buckets));
+}
 
 /**
  * Compares two tables and produces a `DiffReport`.
@@ -407,6 +455,15 @@ async function runCrossDatabaseDiff(
     if (peer) rightPeerKinds.set(col.name, peer.kind);
   }
 
+  // The bucket count is chosen from the size of the table, so that a handful
+  // of changed rows stays a small fraction of the table. The row count comes
+  // from a cheap `count(*)`, so the choice is made before the aggregates run.
+  const leftCountRows = await left.query(
+    `select ${countExpr(left.dialect)} as n from ${quoteQualified(leftInfo.qualifiedName, left.dialect)}`,
+  );
+  const rowCount = Number(leftCountRows[0]?.n ?? 0);
+  const bucketCount = options.bucketCount ?? chooseBucketCount(rowCount);
+
   const leftBuckets = await fetchBuckets(
     left,
     leftInfo,
@@ -414,6 +471,7 @@ async function runCrossDatabaseDiff(
     keyColumns,
     options,
     leftPeerKinds,
+    bucketCount,
   );
   const rightBuckets = await fetchBuckets(
     right,
@@ -422,12 +480,14 @@ async function runCrossDatabaseDiff(
     keyColumns,
     options,
     rightPeerKinds,
+    bucketCount,
   );
 
   const differing = findDifferingBuckets(leftBuckets, rightBuckets);
 
   // Expand only the buckets that disagree. The expanded rows must be hashed
-  // exactly as the buckets were, so the same peer kinds are used.
+  // exactly as the buckets were, so the same peer kinds and bucket count are
+  // used.
   const leftRows = differing.length
     ? await fetchHashes(
         left,
@@ -437,6 +497,7 @@ async function runCrossDatabaseDiff(
         options,
         differing,
         leftPeerKinds,
+        bucketCount,
       )
     : [];
   const rightRows = differing.length
@@ -448,6 +509,7 @@ async function runCrossDatabaseDiff(
         options,
         differing,
         rightPeerKinds,
+        bucketCount,
       )
     : [];
 
@@ -552,9 +614,9 @@ function joinKeyExprs(parts: string[], dialect: Dialect): string {
 }
 
 /** Computes the bucket id for a row, from the hash of its canonical key. */
-function bucketExpr(canonicalKey: string, dialect: Dialect): string {
+function bucketExpr(canonicalKey: string, dialect: Dialect, bucketCount: number): string {
   const hexSlice = `substr(md5(${canonicalKey}), 1, 8)`;
-  return `(${canonicalHexToIntExpr(hexSlice, dialect)} % ${BUCKET_COUNT})`;
+  return `(${canonicalHexToIntExpr(hexSlice, dialect)} % ${bucketCount})`;
 }
 
 /**
@@ -572,6 +634,7 @@ async function fetchBuckets(
   keyColumns: string[],
   options: DiffOptions,
   peerKinds?: Map<string, ColumnKind>,
+  bucketCount: number = DEFAULT_BUCKET_COUNT,
 ): Promise<BucketSummary> {
   const dialect = source.dialect;
   const table = quoteQualified(info.qualifiedName, dialect);
@@ -610,6 +673,7 @@ async function fetchBuckets(
         dialect,
       ),
       dialect,
+      bucketCount,
     )} as bucket,
            ${countExpr(dialect)} as n,
            ${checksumExpr(hashOverInner, dialect)} as c1,
@@ -673,6 +737,7 @@ async function fetchHashes(
   options: DiffOptions,
   buckets: number[],
   peerKinds?: Map<string, ColumnKind>,
+  bucketCount: number = DEFAULT_BUCKET_COUNT,
 ): Promise<HashedRow[]> {
   const dialect = source.dialect;
   const table = quoteQualified(info.qualifiedName, dialect);
@@ -704,6 +769,7 @@ async function fetchHashes(
       dialect,
     ),
     dialect,
+    bucketCount,
   );
 
   const bucketList = buckets.join(', ');
