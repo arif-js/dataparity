@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "dataparity": {
+      "command": "npx",
+      "args": ["-y", "dataparity", "mcp"]
+    }
+  }
+}
