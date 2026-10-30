@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/logo.svg" alt="Dataparity Logo" width="120" height="120" />
+<img src="https://raw.githubusercontent.com/arif-js/dataparity/main/assets/logo.svg" alt="Dataparity Logo" width="120" height="120" />
 
 # Dataparity
 
