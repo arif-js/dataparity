@@ -12,6 +12,7 @@ Runs as a CLI, an MCP server, and a library. MIT licensed.
 [![CI](https://github.com/arif-js/dataparity/actions/workflows/ci.yml/badge.svg)](https://github.com/arif-js/dataparity/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-server-8A2BE2)](https://modelcontextprotocol.io)
+[![Glama](https://glama.ai/mcp/servers/arif-js/dataparity/badges/score.svg)](https://glama.ai/mcp/servers/arif-js/dataparity)
 [![Node](https://img.shields.io/badge/node-%3E%3D22.16.0-brightgreen)](https://nodejs.org)
 
 [What it does](#what-it-does) · [Why the hash is portable](#why-the-hash-is-portable) · [Install](#install) · [CLI](#cli) · [MCP](#mcp) · [Library](#library) · [How it works](#how-it-works) · [Status](#status)
