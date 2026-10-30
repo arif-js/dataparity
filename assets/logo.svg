@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0A0E1A" />
+      <stop offset="100%" stop-color="#111827" />
+    </linearGradient>
+    <linearGradient id="leftCylinder" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38BDF8" />
+      <stop offset="100%" stop-color="#2563EB" />
+    </linearGradient>
+    <linearGradient id="rightCylinder" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#34D399" />
+      <stop offset="100%" stop-color="#059669" />
+    </linearGradient>
+    <linearGradient id="parityBridge" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#38BDF8" />
+      <stop offset="50%" stop-color="#818CF8" />
+      <stop offset="100%" stop-color="#34D399" />
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="12" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- Canvas Background -->
+  <rect width="512" height="512" rx="112" fill="url(#bgGrad)" stroke="#1E293B" stroke-width="4" />
+
+  <!-- Subtle glow backdrop -->
+  <circle cx="256" cy="256" r="140" fill="#4F46E5" opacity="0.12" filter="blur(40px)" />
+
+  <!-- Left Database Disk Stack (Prod / Left Source) -->
+  <g transform="translate(110, 160)">
+    <!-- Top Cylinder Cap -->
+    <path d="M 0,28 C 0,12 28,0 62,0 C 96,0 124,12 124,28 C 124,44 96,56 62,56 C 28,56 0,44 0,28 Z" fill="url(#leftCylinder)" />
+    <!-- Upper Body & Slice -->
+    <path d="M 0,28 L 0,84 C 0,100 28,112 62,112 C 96,112 124,100 124,84 L 124,28 C 124,44 96,56 62,56 C 28,56 0,44 0,28 Z" fill="url(#leftCylinder)" opacity="0.85" />
+    <!-- Lower Body -->
+    <path d="M 0,84 L 0,140 C 0,156 28,168 62,168 C 96,168 124,156 124,140 L 124,84 C 124,100 96,112 62,112 C 28,112 0,100 0,84 Z" fill="url(#leftCylinder)" opacity="0.65" />
+    <!-- Disk Rings highlight -->
+    <path d="M 0,84 C 0,100 28,112 62,112 C 96,112 124,100 124,84" fill="none" stroke="#7DD3FC" stroke-width="2.5" opacity="0.8" />
+    <path d="M 0,140 C 0,156 28,168 62,168 C 96,168 124,156 124,140" fill="none" stroke="#7DD3FC" stroke-width="2.5" opacity="0.8" />
+  </g>
+
+  <!-- Right Database Disk Stack (Staging / Right Source) -->
+  <g transform="translate(278, 160)">
+    <!-- Top Cylinder Cap -->
+    <path d="M 0,28 C 0,12 28,0 62,0 C 96,0 124,12 124,28 C 124,44 96,56 62,56 C 28,56 0,44 0,28 Z" fill="url(#rightCylinder)" />
+    <!-- Upper Body & Slice -->
+    <path d="M 0,28 L 0,84 C 0,100 28,112 62,112 C 96,112 124,100 124,84 L 124,28 C 124,44 96,56 62,56 C 28,56 0,44 0,28 Z" fill="url(#rightCylinder)" opacity="0.85" />
+    <!-- Lower Body -->
+    <path d="M 0,84 L 0,140 C 0,156 28,168 62,168 C 96,168 124,156 124,140 L 124,84 C 124,100 96,112 62,112 C 28,112 0,100 0,84 Z" fill="url(#rightCylinder)" opacity="0.65" />
+    <!-- Disk Rings highlight -->
+    <path d="M 0,84 C 0,100 28,112 62,112 C 96,112 124,100 124,84" fill="none" stroke="#6EE7B7" stroke-width="2.5" opacity="0.8" />
+    <path d="M 0,140 C 0,156 28,168 62,168 C 96,168 124,156 124,140" fill="none" stroke="#6EE7B7" stroke-width="2.5" opacity="0.8" />
+  </g>
+
+  <!-- Central Parity / Equivalence Sync Core -->
+  <g transform="translate(256, 244)">
+    <!-- Center badge backing -->
+    <circle cx="0" cy="0" r="42" fill="#0F172A" stroke="url(#parityBridge)" stroke-width="4" filter="url(#glow)" />
+    
+    <!-- Parity Bars (≡ / Mathematical Identity & Parity) -->
+    <line x1="-18" y1="-12" x2="18" y2="-12" stroke="url(#parityBridge)" stroke-width="5" stroke-linecap="round" />
+    <line x1="-18" y1="0" x2="18" y2="0" stroke="url(#parityBridge)" stroke-width="5" stroke-linecap="round" />
+    <line x1="-18" y1="12" x2="18" y2="12" stroke="url(#parityBridge)" stroke-width="5" stroke-linecap="round" />
+  </g>
+
+  <!-- Dynamic Hash Particles Connecting Left & Right -->
+  <circle cx="206" cy="226" r="4" fill="#38BDF8" opacity="0.9" />
+  <circle cx="306" cy="262" r="4" fill="#34D399" opacity="0.9" />
+</svg>

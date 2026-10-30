@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/logo.svg" alt="Dataparity Logo" width="120" height="120" />
+
 # Dataparity
 
 **Cross-database data diff and reconciliation for AI agents, with a portable row hash.**
