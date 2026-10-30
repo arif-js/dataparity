@@ -1,0 +1,98 @@
+name: Release
+
+# Automatically publishes to npm (via OIDC Trusted Publishing with provenance),
+# creates a GitHub Release, and updates the MCP Registry whenever:
+#   1. A commit is pushed to `main` with a new version in `package.json`, OR
+#   2. A `v*` tag (e.g. `v0.1.1`) is pushed.
+#
+# Configure Trusted Publishing on npmjs.com -> dataparity -> Settings ->
+# Trusted Publisher -> GitHub Actions:
+#   Owner: arif-js
+#   Repository: dataparity
+#   Workflow filename: release.yml
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write # create the GitHub Release and tag
+  id-token: write # npm trusted publishing, provenance, and MCP Registry login
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    outputs:
+      published: ${{ steps.check_npm.outputs.should_publish }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Check version and whether it is already on npm
+        id: check_npm
+        run: |
+          pkg_version="$(node -p "require('./package.json').version")"
+          srv_version="$(node -p "require('./server.json').version")"
+          if [ "$pkg_version" != "$srv_version" ]; then
+            echo "::error::package.json ($pkg_version) and server.json ($srv_version) versions must match"
+            exit 1
+          fi
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]] && [ "v${pkg_version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match package.json version v${pkg_version}"
+            exit 1
+          fi
+          if npm view "dataparity@${pkg_version}" version > /dev/null 2>&1; then
+            echo "dataparity@${pkg_version} is already published on npm; skipping publish."
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "dataparity@${pkg_version} is not on npm yet; proceeding with release."
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            echo "version=${pkg_version}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install dependencies
+        if: steps.check_npm.outputs.should_publish == 'true'
+        run: npm ci
+
+      - name: Verify and build
+        if: steps.check_npm.outputs.should_publish == 'true'
+        run: |
+          npm run lint
+          npm run typecheck
+          npm test
+          npm run build
+
+      - name: Package
+        if: steps.check_npm.outputs.should_publish == 'true'
+        run: |
+          npm pack --ignore-scripts
+          sha256sum dataparity-*.tgz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish to npm via OIDC Trusted Publisher
+        if: steps.check_npm.outputs.should_publish == 'true'
+        run: |
+          npm install -g npm@^11.5.1
+          npm --version
+          npm publish dataparity-*.tgz --provenance --access public --ignore-scripts
+
+      - name: Create GitHub Release
+        if: steps.check_npm.outputs.should_publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v${{ steps.check_npm.outputs.version }}"
+          if ! gh release view "$tag" > /dev/null 2>&1; then
+            gh release create "$tag" dataparity-*.tgz SHA256SUMS --title "$tag" --generate-notes
+          fi
+
+  mcp-registry:
+    needs: release
+    if: needs.release.outputs.published == 'true'
+    uses: ./.github/workflows/mcp-registry.yml
+

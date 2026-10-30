@@ -1,0 +1,38 @@
+name: MCP Registry
+
+# Publishes server.json to the MCP Registry (registry.modelcontextprotocol.io) as
+# io.github.arif-js/dataparity. The Release workflow calls this after publishing to npm;
+# it can also be run by hand to retry. The registry authenticates the workflow through
+# GitHub OIDC, so no token is stored.
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # MCP Registry login
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wait for the version to appear on npm
+        run: |
+          version="$(node -p "require('./server.json').version")"
+          for attempt in $(seq 1 30); do
+            if npm view "dataparity@${version}" version > /dev/null 2>&1; then
+              echo "dataparity@${version} is available"
+              exit 0
+            fi
+            echo "dataparity@${version} not on npm yet (attempt ${attempt}/30)"
+            sleep 20
+          done
+          echo "dataparity@${version} did not appear on npm within 10 minutes"
+          exit 1
+      - name: Publish to the MCP Registry
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" | tar xz mcp-publisher
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish
+
