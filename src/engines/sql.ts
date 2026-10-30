@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { classifyType, type Dialect } from '../core/canonical.js';
-import { type ColumnInfo, quoteIdent, type Source, SourceError, type TableInfo } from './source.js';
+import { classifyType, type Dialect, escapeSqlLiteral } from '../core/canonical.js';
+import { type ColumnInfo, type Source, SourceError, type TableInfo } from './source.js';
 
 /** A Postgres connection, identified by a connection string. */
 export interface PostgresOptions {
@@ -85,14 +85,14 @@ export class PostgresSource implements Source {
     const rows = await this.query(
       `select table_name, column_name, data_type, is_nullable, ordinal_position
          from information_schema.columns
-        where table_schema = '${escapeLiteral(schema)}'
+        where table_schema = '${escapeSqlLiteral(schema)}'
           and table_name in (
             select table_name from information_schema.tables
-             where table_schema = '${escapeLiteral(schema)}' and table_type = 'BASE TABLE'
+             where table_schema = '${escapeSqlLiteral(schema)}' and table_type = 'BASE TABLE'
           )
         order by table_name, ordinal_position`,
     );
-    return groupTables(rows, 'postgres');
+    return groupTables(rows, 'postgres', schema);
   }
 
   async describeTable(qualifiedName: string): Promise<TableInfo> {
@@ -100,7 +100,7 @@ export class PostgresSource implements Source {
     const rows = await this.query(
       `select table_name, column_name, data_type, is_nullable, ordinal_position
          from information_schema.columns
-        where table_schema = '${escapeLiteral(schema)}' and table_name = '${escapeLiteral(table)}'
+        where table_schema = '${escapeSqlLiteral(schema)}' and table_name = '${escapeSqlLiteral(table)}'
         order by ordinal_position`,
     );
     if (rows.length === 0) {
@@ -194,27 +194,28 @@ export class MysqlSource implements Source {
   }
 
   async listTables(schema?: string): Promise<TableInfo[]> {
-    const where = schema ? `where table_schema = '${escapeLiteral(schema)}'` : '';
+    const targetSchema = schema ? `'${escapeSqlLiteral(schema)}'` : 'database()';
     const rows = await this.query(
       `select table_name, column_name, column_type, is_nullable, ordinal_position
          from information_schema.columns
-         ${where}
-         and table_name in (
-           select table_name from information_schema.tables
-            ${where} and table_type = 'BASE TABLE'
-         )
+        where table_schema = ${targetSchema}
+          and table_name in (
+            select table_name from information_schema.tables
+             where table_schema = ${targetSchema} and table_type = 'BASE TABLE'
+          )
         order by table_name, ordinal_position`,
     );
-    return groupTables(rows, 'mysql');
+    return groupTables(rows, 'mysql', schema || null);
   }
 
   async describeTable(qualifiedName: string): Promise<TableInfo> {
     const [schema, table] = splitQualified(qualifiedName, '');
+    const targetSchema = schema ? `'${escapeSqlLiteral(schema)}'` : 'database()';
     const rows = await this.query(
       `select table_name, column_name, column_type, is_nullable, ordinal_position
          from information_schema.columns
-        where table_name = '${escapeLiteral(table)}'
-          ${schema ? `and table_schema = '${escapeLiteral(schema)}'` : ''}
+        where table_name = '${escapeSqlLiteral(table)}'
+          and table_schema = ${targetSchema}
         order by ordinal_position`,
     );
     if (rows.length === 0) {
@@ -239,6 +240,9 @@ export interface SqliteOptions {
   /** Open the database read-only. Defaults to true. */
   readOnly?: boolean;
 }
+
+/** Counter so distinct `:memory:` SQLite instances get distinct `databaseKey`s. */
+let sqliteMemorySeq = 0;
 
 /** SQLite source, using node's built-in `node:sqlite`. */
 export class SqliteSource implements Source {
@@ -308,7 +312,11 @@ export class SqliteSource implements Source {
     }
 
     const id = options.id ?? deriveId('sqlite', options.path);
-    return new SqliteSource(db, id, options.label ?? id, `sqlite-db:${options.path}`);
+    const databaseKey =
+      options.path === ':memory:'
+        ? `sqlite-db:memory:${++sqliteMemorySeq}`
+        : `sqlite-db:${options.path}`;
+    return new SqliteSource(db, id, options.label ?? id, databaseKey);
   }
 
   async query(sql: string, params: unknown[] = []): Promise<Record<string, unknown>[]> {
@@ -345,7 +353,7 @@ export class SqliteSource implements Source {
               p.cid + 1 as ordinal_position
          from sqlite_master m
          join pragma_table_info(m.name) p
-        where m.type = 'table' and m.name = '${escapeLiteral(table)}'
+        where m.type = 'table' and m.name = '${escapeSqlLiteral(table)}'
         order by p.cid`,
     );
     if (rows.length === 0) {
@@ -422,11 +430,6 @@ export function splitQualified(qualifiedName: string, defaultSchema: string): [s
   return [qualifiedName.slice(0, idx), qualifiedName.slice(idx + 1)];
 }
 
-/** Escapes a value for use inside a single-quoted SQL literal. */
-export function escapeLiteral(value: string): string {
-  return value.replace(/'/g, "''");
-}
-
 /** Derives a stable source id from a connection target. */
 export function deriveId(kind: string, target: string): string {
   const sanitized = target.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '');
@@ -446,5 +449,3 @@ function isAuthError(err: unknown): boolean {
   const code = (err as { code?: string })?.code ?? '';
   return code === '28P01' || code === '28000' || code === 'ER_ACCESS_DENIED_ERROR';
 }
-
-export { quoteIdent };

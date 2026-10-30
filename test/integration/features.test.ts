@@ -6,9 +6,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { diffTables } from '../../src/core/diff.js';
 import { DuckdbSource } from '../../src/engines/duckdb.js';
-import type { Source } from '../../src/engines/source.js';
 import { SourceError } from '../../src/engines/source.js';
 import { MysqlSource, PostgresSource, SqliteSource } from '../../src/engines/sql.js';
+import { skipTest, tryConnect } from './helpers.js';
 
 /**
  * Feature tests.
@@ -31,15 +31,6 @@ const MYSQL_OPTIONS = {
   password: process.env.DATAPARITY_TEST_MYSQL_PASSWORD ?? 'test',
   database: process.env.DATAPARITY_TEST_MYSQL_DB ?? 'difftest',
 };
-
-/** Connects to a source, returning null when it is not reachable. */
-async function tryConnect(fn: () => Promise<Source>): Promise<Source | null> {
-  try {
-    return await fn();
-  } catch {
-    return null;
-  }
-}
 
 /** The rows used by the fixtures. */
 const ROWS: [number, string, number, boolean][] = [
@@ -167,14 +158,30 @@ describe('DuckDB', () => {
       await source.close();
     }
   });
+
+  it('diffs two separate in-memory DuckDB file sources via checksum', async () => {
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(csvPath, 'id,country,amount\n1,DE,10.5\n2,DE,20.25\n3,US,30.0\n');
+    writeFileSync(csv2Path, 'id,country,amount\n1,DE,10.5\n3,US,999.0\n4,US,40.75\n');
+
+    const left = await DuckdbSource.open({ files: [csvPath] });
+    const right = await DuckdbSource.open({ files: [csv2Path] });
+    try {
+      const report = await diffTables(left, 'rows', right, 'rows2', { keyColumns: ['id'] });
+      expect(report.strategy).toBe('checksum');
+      expect(report.summary).toMatchObject({ added: 1, removed: 1, modified: 1 });
+    } finally {
+      await left.close();
+      await right.close();
+    }
+  });
 });
 
 describe('Postgres', () => {
-  it('filters both sides with a WHERE clause', async () => {
+  it('filters both sides with a WHERE clause', async (ctx) => {
     const pg = await tryConnect(() => PostgresSource.connect({ connectionString: PG_CONNECTION }));
     if (!pg) {
-      console.warn('Skipping: Postgres is not reachable.');
-      return;
+      skipTest(ctx, 'Skipping: Postgres is not reachable.');
     }
     try {
       await pg.query('drop table if exists opt_a');
@@ -207,11 +214,10 @@ describe('Postgres', () => {
     }
   });
 
-  it('limits the compared columns', async () => {
+  it('limits the compared columns', async (ctx) => {
     const pg = await tryConnect(() => PostgresSource.connect({ connectionString: PG_CONNECTION }));
     if (!pg) {
-      console.warn('Skipping: Postgres is not reachable.');
-      return;
+      skipTest(ctx, 'Skipping: Postgres is not reachable.');
     }
     try {
       await pg.query('drop table if exists cols_a');
@@ -236,11 +242,10 @@ describe('Postgres', () => {
     }
   });
 
-  it('caps the reported changes and flags the truncation', async () => {
+  it('caps the reported changes and flags the truncation', async (ctx) => {
     const pg = await tryConnect(() => PostgresSource.connect({ connectionString: PG_CONNECTION }));
     if (!pg) {
-      console.warn('Skipping: Postgres is not reachable.');
-      return;
+      skipTest(ctx, 'Skipping: Postgres is not reachable.');
     }
     try {
       await pg.query('drop table if exists cap_a');
@@ -264,11 +269,10 @@ describe('Postgres', () => {
     }
   });
 
-  it('really limits the rows compared when sampling', async () => {
+  it('really limits the rows compared when sampling', async (ctx) => {
     const pg = await tryConnect(() => PostgresSource.connect({ connectionString: PG_CONNECTION }));
     if (!pg) {
-      console.warn('Skipping: Postgres is not reachable.');
-      return;
+      skipTest(ctx, 'Skipping: Postgres is not reachable.');
     }
     try {
       await pg.query('drop table if exists smp_a');
@@ -294,11 +298,10 @@ describe('Postgres', () => {
     }
   });
 
-  it('handles two tables that share only the key column', async () => {
+  it('handles two tables that share only the key column', async (ctx) => {
     const pg = await tryConnect(() => PostgresSource.connect({ connectionString: PG_CONNECTION }));
     if (!pg) {
-      console.warn('Skipping: Postgres is not reachable.');
-      return;
+      skipTest(ctx, 'Skipping: Postgres is not reachable.');
     }
     try {
       await pg.query('drop table if exists keyonly_a');
@@ -317,11 +320,10 @@ describe('Postgres', () => {
     }
   });
 
-  it('handles a composite key', async () => {
+  it('handles a composite key', async (ctx) => {
     const pg = await tryConnect(() => PostgresSource.connect({ connectionString: PG_CONNECTION }));
     if (!pg) {
-      console.warn('Skipping: Postgres is not reachable.');
-      return;
+      skipTest(ctx, 'Skipping: Postgres is not reachable.');
     }
     try {
       await pg.query('drop table if exists comp_a');
@@ -342,11 +344,10 @@ describe('Postgres', () => {
 });
 
 describe('risk', () => {
-  it('rates a removed column as high', async () => {
+  it('rates a removed column as high', async (ctx) => {
     const pg = await tryConnect(() => PostgresSource.connect({ connectionString: PG_CONNECTION }));
     if (!pg) {
-      console.warn('Skipping: Postgres is not reachable.');
-      return;
+      skipTest(ctx, 'Skipping: Postgres is not reachable.');
     }
     try {
       await pg.query('drop table if exists risk_a');
@@ -363,11 +364,10 @@ describe('risk', () => {
     }
   });
 
-  it('rates identical data as none', async () => {
+  it('rates identical data as none', async (ctx) => {
     const pg = await tryConnect(() => PostgresSource.connect({ connectionString: PG_CONNECTION }));
     if (!pg) {
-      console.warn('Skipping: Postgres is not reachable.');
-      return;
+      skipTest(ctx, 'Skipping: Postgres is not reachable.');
     }
     try {
       await pg.query('drop table if exists risk_c');
@@ -389,11 +389,10 @@ describe('risk', () => {
 });
 
 describe('attribution', () => {
-  it('reports the segment the changes concentrate in', async () => {
+  it('reports the segment the changes concentrate in', async (ctx) => {
     const pg = await tryConnect(() => PostgresSource.connect({ connectionString: PG_CONNECTION }));
     if (!pg) {
-      console.warn('Skipping: Postgres is not reachable.');
-      return;
+      skipTest(ctx, 'Skipping: Postgres is not reachable.');
     }
     try {
       await pg.query('drop table if exists attr_a');
@@ -427,11 +426,10 @@ describe('attribution', () => {
 });
 
 describe('errors', () => {
-  it('reports a missing key column', async () => {
+  it('reports a missing key column', async (ctx) => {
     const pg = await tryConnect(() => PostgresSource.connect({ connectionString: PG_CONNECTION }));
     if (!pg) {
-      console.warn('Skipping: Postgres is not reachable.');
-      return;
+      skipTest(ctx, 'Skipping: Postgres is not reachable.');
     }
     try {
       await expect(
@@ -442,11 +440,10 @@ describe('errors', () => {
     }
   });
 
-  it('reports a missing table', async () => {
+  it('reports a missing table', async (ctx) => {
     const pg = await tryConnect(() => PostgresSource.connect({ connectionString: PG_CONNECTION }));
     if (!pg) {
-      console.warn('Skipping: Postgres is not reachable.');
-      return;
+      skipTest(ctx, 'Skipping: Postgres is not reachable.');
     }
     try {
       await expect(
@@ -457,11 +454,10 @@ describe('errors', () => {
     }
   });
 
-  it('rejects an empty key list', async () => {
+  it('rejects an empty key list', async (ctx) => {
     const pg = await tryConnect(() => PostgresSource.connect({ connectionString: PG_CONNECTION }));
     if (!pg) {
-      console.warn('Skipping: Postgres is not reachable.');
-      return;
+      skipTest(ctx, 'Skipping: Postgres is not reachable.');
     }
     try {
       await expect(
@@ -474,12 +470,11 @@ describe('errors', () => {
 });
 
 describe('cross-database', () => {
-  it('gives identical checksums for identical data in Postgres and MySQL', async () => {
+  it('gives identical checksums for identical data in Postgres and MySQL', async (ctx) => {
     const pg = await tryConnect(() => PostgresSource.connect({ connectionString: PG_CONNECTION }));
     const my = await tryConnect(() => MysqlSource.connect(MYSQL_OPTIONS));
     if (!pg || !my) {
-      console.warn('Skipping: databases are not reachable.');
-      return;
+      skipTest(ctx, 'Skipping: databases are not reachable.');
     }
     try {
       await pg.query('drop table if exists xdb');
@@ -503,12 +498,11 @@ describe('cross-database', () => {
     }
   });
 
-  it('detects the same difference in Postgres and MySQL', async () => {
+  it('detects the same difference in Postgres and MySQL', async (ctx) => {
     const pg = await tryConnect(() => PostgresSource.connect({ connectionString: PG_CONNECTION }));
     const my = await tryConnect(() => MysqlSource.connect(MYSQL_OPTIONS));
     if (!pg || !my) {
-      console.warn('Skipping: databases are not reachable.');
-      return;
+      skipTest(ctx, 'Skipping: databases are not reachable.');
     }
     try {
       await pg.query('drop table if exists xdiff');
@@ -534,11 +528,53 @@ describe('cross-database', () => {
     }
   });
 
-  it('agrees between a SQLite file and Postgres', async () => {
+  it('localises which columns changed across databases', async (ctx) => {
+    const pg = await tryConnect(() => PostgresSource.connect({ connectionString: PG_CONNECTION }));
+    const my = await tryConnect(() => MysqlSource.connect(MYSQL_OPTIONS));
+    if (!pg || !my) {
+      skipTest(ctx, 'Skipping: databases are not reachable.');
+    }
+    try {
+      await pg.query('drop table if exists xcols');
+      await pg.query(
+        'create table xcols(id int primary key, country text, amount double precision)',
+      );
+      await my.query('drop table if exists xcols');
+      await my.query('create table xcols(id int primary key, country varchar(20), amount double)');
+      for (const [id, country, amount] of [
+        [1, 'DE', 10.5],
+        [2, 'DE', 20.25],
+        [3, 'US', 5.0],
+      ]) {
+        await pg.query('insert into xcols values ($1,$2,$3)', [id, country, amount]);
+        await my.query('insert into xcols values (?,?,?)', [id, country, amount]);
+      }
+      // Row 2 changes only `amount`; row 3 changes only `country`.
+      await my.query('update xcols set amount = 999.0 where id = 2');
+      await my.query("update xcols set country = 'FR' where id = 3");
+
+      const report = await diffTables(pg, 'public.xcols', my, 'xcols', { keyColumns: ['id'] });
+      expect(report.strategy).toBe('checksum');
+      expect(report.summary.modified).toBe(2);
+
+      const byKey = new Map(
+        report.changes.filter((c) => c.kind === 'modified').map((c) => [c.key, c]),
+      );
+      // Cross-database localisation reports *which* columns changed. Values are
+      // not transferred (only hashes cross the wire), so before/after are absent.
+      expect(byKey.get('2')?.columns?.map((c) => c.column)).toEqual(['amount']);
+      expect(byKey.get('3')?.columns?.map((c) => c.column)).toEqual(['country']);
+      expect(byKey.get('2')?.columns?.[0]?.before).toBeUndefined();
+    } finally {
+      await pg?.close();
+      await my?.close();
+    }
+  });
+
+  it('agrees between a SQLite file and Postgres', async (ctx) => {
     const pg = await tryConnect(() => PostgresSource.connect({ connectionString: PG_CONNECTION }));
     if (!pg) {
-      console.warn('Skipping: Postgres is not reachable.');
-      return;
+      skipTest(ctx, 'Skipping: Postgres is not reachable.');
     }
     const sq = await SqliteSource.open({ path: sqlitePath });
     try {
@@ -560,7 +596,7 @@ describe('cross-database', () => {
     }
   });
 
-  it('gives the same answer at every bucket count', async () => {
+  it('gives the same answer at every bucket count', async (ctx) => {
     // Regression: the expansion of a bucket once used a different bucket count
     // on each side, so the two sides expanded different buckets and the diff
     // reported thousands of rows that had not changed. Any explicit bucket
@@ -568,8 +604,7 @@ describe('cross-database', () => {
     const pg = await tryConnect(() => PostgresSource.connect({ connectionString: PG_CONNECTION }));
     const my = await tryConnect(() => MysqlSource.connect(MYSQL_OPTIONS));
     if (!pg || !my) {
-      console.warn('Skipping: databases are not reachable.');
-      return;
+      skipTest(ctx, 'Skipping: databases are not reachable.');
     }
     try {
       await pg.query('drop table if exists xbc');
@@ -602,13 +637,12 @@ describe('cross-database', () => {
     }
   });
 
-  it('transfers only a small part of a large table when few rows differ', async () => {
+  it('transfers only a small part of a large table when few rows differ', async (ctx) => {
     // The point of the bucketed comparison is that a table with a handful of
     // changed rows does not have to be moved in full. This measures it.
     const pg = await tryConnect(() => PostgresSource.connect({ connectionString: PG_CONNECTION }));
     if (!pg) {
-      console.warn('Skipping: Postgres is not reachable.');
-      return;
+      skipTest(ctx, 'Skipping: Postgres is not reachable.');
     }
     try {
       await pg.query('drop table if exists xbig');
@@ -659,6 +693,33 @@ describe('cross-database', () => {
       }
     } finally {
       await pg?.close();
+    }
+  });
+
+  it('lists MySQL tables without requiring a schema and canonicalizes timestamptz across engines', async (ctx) => {
+    const pg = await tryConnect(() => PostgresSource.connect({ connectionString: PG_CONNECTION }));
+    const my = await tryConnect(() => MysqlSource.connect(MYSQL_OPTIONS));
+    if (!pg || !my) {
+      skipTest(ctx, 'Skipping: databases are not reachable.');
+    }
+    try {
+      await pg.query('drop table if exists xts_pg');
+      await pg.query('create table xts_pg(id int primary key, created_at timestamptz)');
+      await pg.query("insert into xts_pg values (1, '2024-05-10 14:30:45.987654+02:00')");
+
+      await my.query('drop table if exists xts_my');
+      await my.query('create table xts_my(id int primary key, created_at datetime)');
+      await my.query("insert into xts_my values (1, '2024-05-10 12:30:45')");
+
+      const tables = await my.listTables();
+      expect(tables.map((t) => t.name)).toContain('xts_my');
+
+      const report = await diffTables(pg, 'public.xts_pg', my, 'xts_my', { keyColumns: ['id'] });
+      expect(report.summary.modified).toBe(0);
+      expect(report.left.checksum).toBe(report.right.checksum);
+    } finally {
+      await pg?.close();
+      await my?.close();
     }
   });
 });

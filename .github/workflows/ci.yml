@@ -24,10 +24,12 @@ jobs:
       - run: npm test
       - run: npm run build
 
-  integration:
+  audit:
     runs-on: ubuntu-latest
-    # The integration suite needs live Postgres and MySQL. It skips itself
-    # when they are unreachable, so this job is informational on forks.
+    # The feature audit exercises every engine, every option and every error
+    # path. It is not skipped when a database is missing — it fails. The unit
+    # and integration suite passed at 35 tests while eight real bugs were live;
+    # the audit found all of them.
     services:
       postgres:
         image: postgres:16-alpine
@@ -60,7 +62,66 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run test:integration
+      # The audit imports the built output, and `npm run test:audit` builds it.
+      - run: npm run test:audit
+        env:
+          DATAPARITY_TEST_PG: postgres://postgres:test@localhost:55432/difftest
+          DATAPARITY_TEST_MYSQL_HOST: 127.0.0.1
+          DATAPARITY_TEST_MYSQL_PORT: 53306
+          DATAPARITY_TEST_MYSQL_USER: root
+          DATAPARITY_TEST_MYSQL_PASSWORD: test
+          DATAPARITY_TEST_MYSQL_DB: difftest
+
+  integration:
+    runs-on: ubuntu-latest
+    # The integration suite needs live Postgres and MySQL. The tests skip
+    # themselves when the databases are unreachable, so a green run here must
+    # not mean "nothing was tested" — the step below fails the job if any test
+    # was skipped.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: difftest
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: test
+          MYSQL_DATABASE: difftest
+        ports:
+          - 53306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -ptest"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      # A skipped test is a test that did not run. The suite skips itself when
+      # a database is unreachable, so a green integration job that skipped
+      # everything would be a lie. Fail the job instead of reporting a pass.
+      # (`npm run test:integration` builds first, which the MCP test needs.)
+      - name: Run the integration suite
+        run: |
+          output=$(npm run test:integration 2>&1) || { echo "$output"; exit 1; }
+          echo "$output"
+          if echo "$output" | grep -qE '[0-9]+ skipped'; then
+            echo "::error::Integration tests were skipped. The databases were not reachable."
+            exit 1
+          fi
         env:
           DATAPARITY_TEST_PG: postgres://postgres:test@localhost:55432/difftest
           DATAPARITY_TEST_MYSQL_HOST: 127.0.0.1

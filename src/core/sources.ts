@@ -1,4 +1,4 @@
-import { type Config, configSchema, findSource, loadConfig } from '../config/config.js';
+import { type Config, findSource, loadConfig } from '../config/config.js';
 import { DuckdbSource } from '../engines/duckdb.js';
 import type { Source } from '../engines/source.js';
 import { MysqlSource, PostgresSource, SqliteSource } from '../engines/sql.js';
@@ -14,9 +14,16 @@ export async function openSource(entry: Config['sources'][number]): Promise<Sour
     }
     case 'mysql': {
       if (entry.connectionString) {
-        throw new Error(
-          `Source "${entry.name}": mysql sources need host/user/database fields, not a connection string.`,
-        );
+        const parsed = new URL(entry.connectionString);
+        return MysqlSource.connect({
+          host: parsed.hostname || 'localhost',
+          port: parsed.port ? Number(parsed.port) : 3306,
+          user: decodeURIComponent(parsed.username || 'root'),
+          password: decodeURIComponent(parsed.password || ''),
+          database: decodeURIComponent(parsed.pathname.replace(/^\//, '')),
+          id: entry.name,
+          label: entry.name,
+        });
       }
       return MysqlSource.connect({
         host: entry.host ?? 'localhost',
@@ -52,6 +59,3 @@ export async function openNamedSource(name: string, configPath?: string): Promis
   const config = loadConfig(configPath);
   return openSource(findSource(config, name));
 }
-
-export type { Config };
-export { configSchema, findSource, loadConfig };

@@ -39,8 +39,16 @@ async function checkAsync(name, fn) {
   }
 }
 
-const PG = 'postgres://postgres:test@localhost:55432/difftest';
-const MY = { host: '127.0.0.1', port: 53306, user: 'root', password: 'test', database: 'difftest' };
+// The same environment variables the integration suite uses, so both point at
+// the same databases. The defaults match the Docker containers in the README.
+const PG = process.env.DATAPARITY_TEST_PG ?? 'postgres://postgres:test@localhost:55432/difftest';
+const MY = {
+  host: process.env.DATAPARITY_TEST_MYSQL_HOST ?? '127.0.0.1',
+  port: Number(process.env.DATAPARITY_TEST_MYSQL_PORT ?? 53306),
+  user: process.env.DATAPARITY_TEST_MYSQL_USER ?? 'root',
+  password: process.env.DATAPARITY_TEST_MYSQL_PASSWORD ?? 'test',
+  database: process.env.DATAPARITY_TEST_MYSQL_DB ?? 'difftest',
+};
 
 // ---------------------------------------------------------------- fixtures
 const work = mkdtempSync(join(tmpdir(), 'dp-audit-'));
@@ -268,6 +276,24 @@ await checkAsync('Edge: two tables sharing only the key column do not break', as
   return `added=${r.summary.added} removed=${r.summary.removed} modified=${r.summary.modified}`;
 });
 
+await checkAsync('Display: a float change is shown in the units the user wrote', async () => {
+  // The canonical form of a float is an integer count of millionths, because
+  // that is the only form that agrees across engines. The report has to undo
+  // that scaling, or it shows `30000000` where the user wrote `30`.
+  await pg.query('drop table if exists disp_a');
+  await pg.query('drop table if exists disp_b');
+  await pg.query('create table disp_a(id int primary key, amount double precision)');
+  await pg.query('create table disp_b(id int primary key, amount double precision)');
+  await pg.query('insert into disp_a values (1, $1)', [30]);
+  await pg.query('insert into disp_b values (1, $1)', [999]);
+  const r = await diffTables(pg, 'public.disp_a', pg, 'public.disp_b', { keyColumns: ['id'] });
+  const amount = r.changes.find((c) => c.kind === 'modified')?.columns?.find((c) => c.column === 'amount');
+  if (amount?.before !== '30' || amount?.after !== '999') {
+    throw new Error(`shown as ${amount?.before} -> ${amount?.after}, expected 30 -> 999`);
+  }
+  return `before=${amount.before} after=${amount.after}`;
+});
+
 await checkAsync('Edge: a composite key works', async () => {
   await pg.query('drop table if exists ck_a');
   await pg.query('drop table if exists ck_b');
@@ -455,6 +481,63 @@ await checkAsync('Cross-database: a SQLite file and Postgres agree', async () =>
   }
   await sqlite2.close();
   return `checksum ${r.left.checksum}`;
+});
+
+await checkAsync('MySQL: listTables and describeTable without explicit schema', async () => {
+  const tables = await my.listTables();
+  if (!tables.some((t) => t.name === 'xdiff')) {
+    throw new Error(`xdiff not found in ${tables.map((t) => t.name).join(',')}`);
+  }
+  const desc = await my.describeTable('xdiff');
+  if (desc.columns.length !== 3) throw new Error(`expected 3 cols, got ${desc.columns.length}`);
+  return `${tables.length} tables`;
+});
+
+await checkAsync('Timestamps: timestamptz and sub-second timestamps agree across all 4 engines', async () => {
+  await pg.query('drop table if exists ts_pg');
+  await pg.query('create table ts_pg(id int primary key, created_at timestamptz)');
+  await pg.query("insert into ts_pg values (1, '2024-05-10 14:30:45.987654+02:00')");
+  await my.query('drop table if exists ts_my');
+  await my.query('create table ts_my(id int primary key, created_at datetime)');
+  await my.query("insert into ts_my values (1, '2024-05-10 12:30:45')");
+  const tsSqlitePath = join(work, 'ts.db');
+  const tsDb = new DatabaseSync(tsSqlitePath);
+  tsDb.exec('create table ts_sq(id int primary key, created_at timestamp)');
+  tsDb.prepare('insert into ts_sq values (?, ?)').run(1, '2024-05-10 12:30:45.123');
+  tsDb.close();
+  const sqTs = await SqliteSource.open({ path: tsSqlitePath });
+  const r1 = await diffTables(pg, 'public.ts_pg', my, 'ts_my', { keyColumns: ['id'] });
+  const r2 = await diffTables(sqTs, 'ts_sq', my, 'ts_my', { keyColumns: ['id'] });
+  await sqTs.close();
+  if (r1.summary.modified !== 0 || r2.summary.modified !== 0) {
+    throw new Error(`expected 0 modified: pg-my=${r1.summary.modified} sq-my=${r2.summary.modified}`);
+  }
+  return `checksum ${r1.left.checksum}`;
+});
+
+await checkAsync('DuckDB: two separate in-memory file sources diff correctly', async () => {
+  const d1 = await DuckdbSource.open({ files: [csv] });
+  const d2 = await DuckdbSource.open({ files: [csv2] });
+  const r = await diffTables(d1, 'rows', d2, 'rows2', { keyColumns: ['id'] });
+  await d1.close();
+  await d2.close();
+  if (r.strategy !== 'checksum') throw new Error(`expected checksum strategy, got ${r.strategy}`);
+  if (r.summary.added !== 1 || r.summary.removed !== 1 || r.summary.modified !== 1) {
+    throw new Error(`wrong summary: ${JSON.stringify(r.summary)}`);
+  }
+  return `strategy=${r.strategy} modified=${r.summary.modified}`;
+});
+
+await checkAsync('CLI: runs when invoked via a symlink (as npx / npm bin installs it)', async () => {
+  const { symlinkSync } = await import('node:fs');
+  const { execFileSync } = await import('node:child_process');
+  const binLink = join(work, 'dataparity-bin');
+  symlinkSync(join(process.cwd(), 'dist/interfaces/cli/index.js'), binLink);
+  const out = execFileSync(process.execPath, [binLink, '--help'], { encoding: 'utf8' });
+  if (!out.includes('dataparity - cross-database data diff')) {
+    throw new Error('CLI produced no output via symlink');
+  }
+  return 'symlink bin ok';
 });
 
 await pg.close();

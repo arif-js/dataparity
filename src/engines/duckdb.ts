@@ -15,6 +15,9 @@ export interface DuckdbOptions {
   files?: string[];
 }
 
+/** Counter so distinct in-memory DuckDB instances get distinct `databaseKey`s. */
+let memoryInstanceSeq = 0;
+
 /**
  * Local DuckDB source.
  *
@@ -62,12 +65,11 @@ export class DuckdbSource implements Source {
     const id =
       options.id ??
       `duckdb:${(options.path ?? 'memory').replace(/[^a-zA-Z0-9]+/g, '-').toLowerCase()}`;
-    const source = new DuckdbSource(
-      conn,
-      id,
-      options.label ?? id,
-      `duckdb-db:${options.path ?? 'memory'}`,
-    );
+    const isMemory = !options.path || options.path === ':memory:';
+    const databaseKey = isMemory
+      ? `duckdb-db:memory:${++memoryInstanceSeq}`
+      : `duckdb-db:${options.path}`;
+    const source = new DuckdbSource(conn, id, options.label ?? id, databaseKey);
 
     for (const file of options.files ?? []) {
       await source.registerFile(file);
@@ -78,7 +80,7 @@ export class DuckdbSource implements Source {
   /** Exposes a Parquet, CSV or JSON file as a table named after the file. */
   async registerFile(file: string): Promise<string> {
     const lower = file.toLowerCase();
-    const base = file.split('/').pop() ?? file;
+    const base = file.split(/[/\\]/).pop() ?? file;
     const name = base
       .replace(/\.(parquet|csv|json|jsonl|tsv)$/i, '')
       .replace(/[^a-zA-Z0-9_]/g, '_');

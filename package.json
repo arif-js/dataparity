@@ -35,7 +35,8 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     }
   },
   "bin": {
@@ -52,9 +53,10 @@
     "lint": "biome check .",
     "format": "biome check --write .",
     "test": "vitest run test/unit",
-    "test:integration": "vitest run test/integration",
+    "test:integration": "npm run build && vitest run test/integration",
     "test:all": "vitest run",
-    "test:audit": "node scripts/audit-features.mjs",
+    "test:audit": "npm run build && node scripts/audit-features.mjs",
+    "bench": "npm run build && node scripts/bench-scale.mjs",
     "prepublishOnly": "npm run lint && npm run typecheck && npm run test:all && npm run build",
     "prepack": "npm run build"
   },

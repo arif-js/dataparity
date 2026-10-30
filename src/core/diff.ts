@@ -12,6 +12,7 @@ import {
   checksumExpr,
   concatSepExpr,
   type Dialect,
+  FLOAT_SCALE,
   HASH_DIGITS,
   NULL_TAG,
   rowHashExpr,
@@ -67,7 +68,7 @@ export const DEFAULT_MAX_CHANGES = 100;
 export const DEFAULT_MAX_ATTRIBUTIONS = 5;
 
 /**
- * Default number of buckets used when comparing two different databases.
+ * Bucketing: how the cross-database comparison is scaled.
  *
  * The bucket count trades aggregate-query cost against transfer size. With
  * `C` changed rows spread across the key space, the expected number of
@@ -84,8 +85,12 @@ export const DEFAULT_MAX_ATTRIBUTIONS = 5;
  * not so many that the aggregate query becomes the bottleneck. The aggregate
  * runs inside the database, where the data already is, so a larger count
  * costs the database more than it costs the network.
+ *
+ * There is deliberately no default bucket count. The count must be threaded
+ * explicitly to both sides: a fallback applies silently to whichever call
+ * site forgets to pass it, and two sides using different counts expand
+ * different buckets and report rows that never changed.
  */
-export const DEFAULT_BUCKET_COUNT = 4096;
 
 /** The bucket count is never smaller than this. */
 export const MIN_BUCKET_COUNT = 64;
@@ -292,9 +297,7 @@ async function runJoinDiff(
   });
 
   const differs = comparedColumns
-    .map((c) =>
-      isDistinctFrom(`l.${quoteIdent(c, dialect)}`, `r.${quoteIdent(c, dialect)}`, dialect),
-    )
+    .map((_c, i) => `${canonicalLeft[i]} <> ${canonicalRight[i]}`)
     .join(' or ');
 
   // When the two tables share no comparable columns, there is nothing to
@@ -392,10 +395,18 @@ async function runJoinDiff(
       const before = row[`lc${i}`] === undefined ? null : String(row[`lc${i}`]);
       const after = row[`rc${i}`] === undefined ? null : String(row[`rc${i}`]);
       if (before !== after) {
+        // The canonical form of a float or decimal is an integer count of
+        // millionths. That is the right thing to compare and the wrong thing
+        // to show, so the display undoes the scaling.
+        const col = leftInfo.columns.find((x) => x.name === comparedColumns[i]);
+        const kind = resolveKind(
+          col?.kind ?? 'unknown',
+          peerKindOf(comparedColumns[i] as string, 'left'),
+        );
         columnChanges.push({
           column: comparedColumns[i] as string,
-          before: before === null ? null : displayValue(before),
-          after: after === null ? null : displayValue(after),
+          before: displayScaledValue(before, kind),
+          after: displayScaledValue(after, kind),
         });
       }
     }
@@ -470,8 +481,8 @@ async function runCrossDatabaseDiff(
     comparedColumns,
     keyColumns,
     options,
-    leftPeerKinds,
     bucketCount,
+    leftPeerKinds,
   );
   const rightBuckets = await fetchBuckets(
     right,
@@ -479,8 +490,8 @@ async function runCrossDatabaseDiff(
     comparedColumns,
     keyColumns,
     options,
-    rightPeerKinds,
     bucketCount,
+    rightPeerKinds,
   );
 
   const differing = findDifferingBuckets(leftBuckets, rightBuckets);
@@ -496,8 +507,8 @@ async function runCrossDatabaseDiff(
         keyColumns,
         options,
         differing,
-        leftPeerKinds,
         bucketCount,
+        leftPeerKinds,
       )
     : [];
   const rightRows = differing.length
@@ -508,15 +519,15 @@ async function runCrossDatabaseDiff(
         keyColumns,
         options,
         differing,
-        rightPeerKinds,
         bucketCount,
+        rightPeerKinds,
       )
     : [];
 
-  const leftMap = new Map<string, string>();
-  for (const h of leftRows) leftMap.set(h.key, h.hash);
-  const rightMap = new Map<string, string>();
-  for (const h of rightRows) rightMap.set(h.key, h.hash);
+  const leftMap = new Map<string, HashedRow>();
+  for (const h of leftRows) leftMap.set(h.key, h);
+  const rightMap = new Map<string, HashedRow>();
+  for (const h of rightRows) rightMap.set(h.key, h);
 
   const changes: RowChange[] = [];
   const allChangedKeys: string[] = [];
@@ -524,16 +535,20 @@ async function runCrossDatabaseDiff(
   let removed = 0;
   let modified = 0;
 
-  for (const [key, lhash] of leftMap) {
-    const rhash = rightMap.get(key);
-    if (rhash === undefined) {
+  for (const [key, lrow] of leftMap) {
+    const rrow = rightMap.get(key);
+    if (rrow === undefined) {
       removed++;
       allChangedKeys.push(key);
       changes.push({ kind: 'removed', key: displayKey(key) });
-    } else if (rhash !== lhash) {
+    } else if (rrow.hash !== lrow.hash) {
       modified++;
       allChangedKeys.push(key);
-      changes.push({ kind: 'modified', key: displayKey(key) });
+      changes.push({
+        kind: 'modified',
+        key: displayKey(key),
+        columns: localiseChangedColumns(comparedColumns, lrow.columnHashes, rrow.columnHashes),
+      });
     }
   }
   for (const key of rightMap.keys()) {
@@ -633,8 +648,8 @@ async function fetchBuckets(
   comparedColumns: string[],
   keyColumns: string[],
   options: DiffOptions,
+  bucketCount: number,
   peerKinds?: Map<string, ColumnKind>,
-  bucketCount: number = DEFAULT_BUCKET_COUNT,
 ): Promise<BucketSummary> {
   const dialect = source.dialect;
   const table = quoteQualified(info.qualifiedName, dialect);
@@ -650,7 +665,10 @@ async function fetchBuckets(
   });
 
   const where = options.where ? ` where ${options.where}` : '';
-  const limit = options.sampleOnly ? ` limit ${options.sampleLimit ?? 100_000}` : '';
+  const sampleOrder = keyColumns.map((k) => quoteIdent(k, dialect)).join(', ');
+  const limit = options.sampleOnly
+    ? ` order by ${sampleOrder} limit ${options.sampleLimit ?? 100_000}`
+    : '';
 
   // The inner query selects the canonical column expressions under stable
   // names, so the outer query can group by them without repeating the
@@ -721,7 +739,16 @@ function findDifferingBuckets(left: BucketSummary, right: BucketSummary): number
 interface HashedRow {
   key: string;
   hash: string;
+  /**
+   * A short hash of each compared column's canonical value, aligned with
+   * `comparedColumns`. Comparing these across the two sides localises *which*
+   * columns changed without any value leaving the engine.
+   */
+  columnHashes: string[];
 }
+
+/** Hex characters kept from a per-column hash. 16 hex = 64 bits, ample per column. */
+const COLUMN_HASH_DIGITS = 16;
 
 /**
  * Fetches the canonical row hash for the rows in the given buckets.
@@ -736,8 +763,8 @@ async function fetchHashes(
   keyColumns: string[],
   options: DiffOptions,
   buckets: number[],
+  bucketCount: number,
   peerKinds?: Map<string, ColumnKind>,
-  bucketCount: number = DEFAULT_BUCKET_COUNT,
 ): Promise<HashedRow[]> {
   const dialect = source.dialect;
   const table = quoteQualified(info.qualifiedName, dialect);
@@ -774,21 +801,63 @@ async function fetchHashes(
 
   const bucketList = buckets.join(', ');
   const where = options.where ? ` where ${options.where}` : '';
+  const sampleOrder = keyColumns.map((k) => quoteIdent(k, dialect)).join(', ');
+  const limit = options.sampleOnly
+    ? ` order by ${sampleOrder} limit ${options.sampleLimit ?? 100_000}`
+    : '';
+
+  // A short hash of each compared column's canonical value. The canonical form
+  // is byte-identical across engines, so its md5 is too — comparing these slices
+  // tells us which column differs without the value itself crossing the wire.
+  const comparedInnerNames = innerNames.slice(keyColumns.length);
+  const columnHashSelect = comparedInnerNames.map(
+    (n, j) =>
+      `substr(md5(${quoteIdent(n, dialect)}), 1, ${COLUMN_HASH_DIGITS}) as ${quoteIdent(`h${j}`, dialect)}`,
+  );
 
   const sql = `
     select ${innerNames
       .slice(0, keyColumns.length)
       .map((n, i) => `${quoteIdent(n, dialect)} as ${quoteIdent(`k${i}`, dialect)}`)
       .join(', ')},
-           ${hashOverInner} as ${quoteIdent('__hash', dialect)}
-      from (select ${innerSelect.join(', ')} from ${table}${where}) t
+           ${hashOverInner} as ${quoteIdent('__hash', dialect)}${
+             columnHashSelect.length
+               ? `,\n           ${columnHashSelect.join(',\n           ')}`
+               : ''
+           }
+      from (select ${innerSelect.join(', ')} from ${table}${where}${limit}) t
      where ${bucket} in (${bucketList})`;
 
   const rows = await source.query(sql);
   return rows.map((row) => ({
     key: renderKey(row, keyColumns.length),
     hash: String(row.__hash ?? ''),
+    columnHashes: comparedInnerNames.map((_n, j) => String(row[`h${j}`] ?? '')),
   }));
+}
+
+/**
+ * Localises which columns changed in a cross-database modified row.
+ *
+ * Both sides produced a short hash per compared column over the *canonical*
+ * value, which is byte-identical across engines. A column whose hashes differ
+ * is a column that changed. The values themselves never left either engine, so
+ * the change carries the column name only, with `before`/`after` left absent.
+ */
+function localiseChangedColumns(
+  comparedColumns: string[],
+  leftHashes: string[],
+  rightHashes: string[],
+): ColumnChange[] {
+  const columns: ColumnChange[] = [];
+  for (let i = 0; i < comparedColumns.length; i++) {
+    // A missing hash on either side (should not happen for a matched row) is
+    // treated as a difference rather than silently skipped.
+    if (leftHashes[i] !== rightHashes[i]) {
+      columns.push({ column: comparedColumns[i] as string });
+    }
+  }
+  return columns;
 }
 
 /** Separator used when a composite key is rendered as a single string. */
@@ -815,21 +884,6 @@ function displayKey(key: string): string {
     .split(KEY_JOIN)
     .map((part) => displayValue(part))
     .join(KEY_JOIN);
-}
-
-/** The `IS DISTINCT FROM` equivalent for each dialect. */
-function isDistinctFrom(left: string, right: string, dialect: Dialect): string {
-  if (dialect === 'mysql') {
-    // MySQL's null-safe equality operator.
-    return `not (${left} <=> ${right})`;
-  }
-  if (dialect === 'sqlite') {
-    // SQLite has no IS DISTINCT FROM. The null-safe equivalent is a pair of
-    // comparisons: the values differ if exactly one of them is NULL, or if
-    // neither is NULL and they are not equal.
-    return `((${left} is null) <> (${right} is null) or (${left} is not null and ${right} is not null and ${left} <> ${right}))`;
-  }
-  return `${left} is distinct from ${right}`;
 }
 
 /** Chooses which columns to compare. */
@@ -867,14 +921,19 @@ export function compareSchemas(
       differences.push({ column: name, kind: 'removed', leftType: lc.dataType });
       continue;
     }
-    // A boolean and a 0/1 integer are the same logical type. SQLite has no
-    // boolean type, so a boolean there is an integer, and MySQL reports
-    // booleans as `tinyint(1)`. Reporting that as a type change would make
-    // every cross-engine diff of a table with a boolean column look broken.
-    const isBooleanPair =
+    // Engines do not have identical type systems: SQLite has no boolean or
+    // decimal or timestamptz type, and MySQL has no separate timestamptz in
+    // information_schema. Pairs that canonicalize to the same representation
+    // are treated as the same logical type so cross-engine diffs do not report
+    // false schema breaks.
+    const isCompatiblePair =
       (lc.kind === 'boolean' && rc.kind === 'integer') ||
-      (lc.kind === 'integer' && rc.kind === 'boolean');
-    if (lc.kind !== rc.kind && !isBooleanPair) {
+      (lc.kind === 'integer' && rc.kind === 'boolean') ||
+      (lc.kind === 'decimal' && rc.kind === 'float') ||
+      (lc.kind === 'float' && rc.kind === 'decimal') ||
+      (lc.kind === 'timestamp' && rc.kind === 'timestamptz') ||
+      (lc.kind === 'timestamptz' && rc.kind === 'timestamp');
+    if (lc.kind !== rc.kind && !isCompatiblePair) {
       differences.push({
         column: name,
         kind: 'type_changed',
@@ -912,6 +971,28 @@ function displayValue(value: unknown): string {
   if (text === NULL_TAG) return 'NULL';
   if (text.startsWith(VALUE_TAG)) return text.slice(1);
   return text;
+}
+
+/**
+ * Renders a canonical value for display, undoing the float scaling.
+ *
+ * A float or a decimal is canonicalized to an exact integer count of
+ * millionths, because that is the only form that agrees across engines. That
+ * form is wrong for a human reader: `30000000` is not an amount, it is
+ * `30.000000`. The report shows the value the user recognizes.
+ *
+ * The scaling is undone arithmetically rather than by parsing, so a value
+ * that does not divide evenly is not silently rounded a second time.
+ */
+function displayScaledValue(value: string | null, kind: ColumnKind): string | null {
+  if (value === null) return null;
+  const text = displayValue(value);
+  if (kind !== 'float' && kind !== 'decimal') return text;
+  const scaled = Number(text);
+  if (!Number.isFinite(scaled)) return text;
+  // The division is exact in decimal arithmetic up to the six places the
+  // canonical form keeps, so the result is the number the user wrote.
+  return String(scaled / FLOAT_SCALE);
 }
 
 /**
@@ -1059,9 +1140,9 @@ function assessRisk(
     level = 'low';
   }
 
-  if (result.strategy === 'checksum' && level !== 'none') {
+  if (result.strategy === 'checksum' && modified > 0) {
     warnings.push(
-      'Cross-database comparison matched rows on their canonical hash; the changed columns were not localised.',
+      'Cross-database comparison reports which columns changed, but not their before/after values; only hashes crossed the wire.',
     );
   }
 

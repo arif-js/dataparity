@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { diffTables } from '../../src/core/diff.js';
-import type { Source } from '../../src/engines/source.js';
 import { MysqlSource, PostgresSource } from '../../src/engines/sql.js';
+import { skipTest, tryConnect } from './helpers.js';
 
 /**
  * End-to-end diff tests.
@@ -23,15 +23,6 @@ const MYSQL_OPTIONS = {
   database: process.env.DATAPARITY_TEST_MYSQL_DB ?? 'difftest',
 };
 
-/** Connects to a source, returning null when it is not reachable. */
-async function tryConnect(fn: () => Promise<Source>): Promise<Source | null> {
-  try {
-    return await fn();
-  } catch {
-    return null;
-  }
-}
-
 /** The base dataset used by the diff fixtures. */
 const BASE = [
   { id: 1, country: 'DE', amount: 10.5, active: true },
@@ -42,11 +33,10 @@ const BASE = [
 ];
 
 describe('same-database diff', () => {
-  it('finds added, removed and modified rows in Postgres', async () => {
+  it('finds added, removed and modified rows in Postgres', async (ctx) => {
     const pg = await tryConnect(() => PostgresSource.connect({ connectionString: PG_CONNECTION }));
     if (!pg) {
-      console.warn('Skipping same-database diff test: Postgres is not reachable.');
-      return;
+      skipTest(ctx, 'Skipping same-database diff test: Postgres is not reachable.');
     }
 
     try {
@@ -104,11 +94,40 @@ describe('same-database diff', () => {
     }
   });
 
-  it('reports no differences between identical tables', async () => {
+  it('shows a float change in the units the user wrote, not in millionths', async (ctx) => {
+    // The canonical form of a float is an integer count of millionths, because
+    // that is the only form that agrees across engines. The report has to
+    // undo that scaling: `30000000` is not an amount, it is `30`.
     const pg = await tryConnect(() => PostgresSource.connect({ connectionString: PG_CONNECTION }));
     if (!pg) {
-      console.warn('Skipping identical-tables test: Postgres is not reachable.');
-      return;
+      skipTest(ctx, 'Skipping float-display test: Postgres is not reachable.');
+    }
+
+    try {
+      await pg.query('drop table if exists scale_a');
+      await pg.query('drop table if exists scale_b');
+      await pg.query('create table scale_a(id int primary key, amount double precision)');
+      await pg.query('create table scale_b(id int primary key, amount double precision)');
+      await pg.query('insert into scale_a values (1, $1)', [30]);
+      await pg.query('insert into scale_b values (1, $1)', [999]);
+
+      const report = await diffTables(pg, 'public.scale_a', pg, 'public.scale_b', {
+        keyColumns: ['id'],
+      });
+
+      const modified = report.changes.find((c) => c.kind === 'modified');
+      const amount = modified?.columns?.find((c) => c.column === 'amount');
+      expect(amount?.before).toBe('30');
+      expect(amount?.after).toBe('999');
+    } finally {
+      await pg?.close();
+    }
+  });
+
+  it('reports no differences between identical tables', async (ctx) => {
+    const pg = await tryConnect(() => PostgresSource.connect({ connectionString: PG_CONNECTION }));
+    if (!pg) {
+      skipTest(ctx, 'Skipping identical-tables test: Postgres is not reachable.');
     }
 
     try {
@@ -133,11 +152,10 @@ describe('same-database diff', () => {
     }
   });
 
-  it('detects a schema change between the two tables', async () => {
+  it('detects a schema change between the two tables', async (ctx) => {
     const pg = await tryConnect(() => PostgresSource.connect({ connectionString: PG_CONNECTION }));
     if (!pg) {
-      console.warn('Skipping schema-diff test: Postgres is not reachable.');
-      return;
+      skipTest(ctx, 'Skipping schema-diff test: Postgres is not reachable.');
     }
 
     try {
@@ -160,12 +178,11 @@ describe('same-database diff', () => {
 });
 
 describe('cross-database diff', () => {
-  it('finds the same differences in Postgres and MySQL', async () => {
+  it('finds the same differences in Postgres and MySQL', async (ctx) => {
     const pg = await tryConnect(() => PostgresSource.connect({ connectionString: PG_CONNECTION }));
     const my = await tryConnect(() => MysqlSource.connect(MYSQL_OPTIONS));
     if (!pg || !my) {
-      console.warn('Skipping cross-database diff test: databases are not reachable.');
-      return;
+      skipTest(ctx, 'Skipping cross-database diff test: databases are not reachable.');
     }
 
     try {
@@ -241,12 +258,11 @@ describe('cross-database diff', () => {
     }
   });
 
-  it('reports identical data across two different databases', async () => {
+  it('reports identical data across two different databases', async (ctx) => {
     const pg = await tryConnect(() => PostgresSource.connect({ connectionString: PG_CONNECTION }));
     const my = await tryConnect(() => MysqlSource.connect(MYSQL_OPTIONS));
     if (!pg || !my) {
-      console.warn('Skipping cross-database identity test: databases are not reachable.');
-      return;
+      skipTest(ctx, 'Skipping cross-database identity test: databases are not reachable.');
     }
 
     try {

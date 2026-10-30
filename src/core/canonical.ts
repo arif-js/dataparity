@@ -61,6 +61,20 @@ export type Dialect = 'duckdb' | 'postgres' | 'mysql' | 'sqlite';
 /** Floating point canonicalization: values are rounded to this many decimals. */
 export const FLOAT_PRECISION = 6;
 
+/**
+ * The scale factor applied to a float or decimal before it is rendered.
+ *
+ * A value is multiplied by this and rounded to an exact integer, so the
+ * canonical form is an integer count of millionths rather than a decimal
+ * string. Postgres renders a decimal as `10.500000` and MySQL as `10.50`, so
+ * the decimal strings disagree even when the values do not; the integer form
+ * has no trailing zeros or scale to disagree about.
+ *
+ * The factor is exported because the report has to undo it: a user reading
+ * `30000000` instead of `30` cannot use the output.
+ */
+export const FLOAT_SCALE = 10 ** FLOAT_PRECISION;
+
 /** Modulus for checksums. 2^61 - 1, the largest prime below 2^61. */
 export const CHECKSUM_MODULUS = '2305843009213693951';
 
@@ -166,7 +180,7 @@ export function canonicalExpr(
       // about: Postgres's `10.500000` and MySQL's `10.50` both become
       // `10500000`.
       const asDecimal = dialect === 'postgres' ? `cast(${expr} as numeric)` : expr;
-      const scaled = `cast(cast(round(${asDecimal} * 1000000) as ${integerType(dialect)}) as ${textType(dialect)})`;
+      const scaled = `cast(cast(round(${asDecimal} * ${FLOAT_SCALE}) as ${integerType(dialect)}) as ${textType(dialect)})`;
       return tagged(scaled);
     }
 
@@ -176,7 +190,7 @@ export function canonicalExpr(
       // canonical form stable and comparable across engines. The rounding
       // happens in exact decimal arithmetic, not binary floating point.
       const asDecimal = dialect === 'postgres' ? `cast(${expr} as numeric)` : expr;
-      const scaled = `cast(cast(round(${asDecimal} * 1000000) as ${integerType(dialect)}) as ${textType(dialect)})`;
+      const scaled = `cast(cast(round(${asDecimal} * ${FLOAT_SCALE}) as ${integerType(dialect)}) as ${textType(dialect)})`;
       return tagged(scaled);
     }
 
@@ -194,19 +208,30 @@ export function canonicalExpr(
       if (dialect === 'mysql') {
         return tagged(`date_format(${expr}, '%Y-%m-%d %H:%i:%s')`);
       }
-      return tagged(castToText(`cast(${expr} as timestamp)`, dialect));
+      if (dialect === 'postgres') {
+        return tagged(`to_char(cast(${expr} as timestamp), 'YYYY-MM-DD HH24:MI:SS')`);
+      }
+      if (dialect === 'duckdb') {
+        return tagged(`strftime(cast(${expr} as timestamp), '%Y-%m-%d %H:%M:%S')`);
+      }
+      return tagged(`strftime('%Y-%m-%d %H:%M:%S', ${expr})`);
     }
 
     case 'timestamptz': {
       // Normalize to UTC before rendering, otherwise the same instant in two
       // time zones renders differently.
+      if (dialect === 'mysql') {
+        return tagged(`date_format(${expr}, '%Y-%m-%d %H:%i:%s')`);
+      }
       if (dialect === 'duckdb') {
-        return tagged(castToText(`cast(cast(${expr} at time zone 'UTC' as timestamp)`, dialect));
+        return tagged(
+          `strftime(cast(${expr} as timestamptz) at time zone 'UTC', '%Y-%m-%d %H:%M:%S')`,
+        );
       }
       if (dialect === 'postgres') {
-        return tagged(castToText(`cast(${expr} at time zone 'UTC')`, dialect));
+        return tagged(`to_char(${expr} at time zone 'UTC', 'YYYY-MM-DD HH24:MI:SS')`);
       }
-      return tagged(castToText(`cast(${expr} as timestamp)`, dialect));
+      return tagged(`strftime('%Y-%m-%d %H:%M:%S', ${expr})`);
     }
 
     case 'date':

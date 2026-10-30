@@ -13,7 +13,7 @@ import { diffTables } from '../../core/diff.js';
 import { openSource } from '../../core/sources.js';
 import type { Source } from '../../engines/source.js';
 import { SourceError } from '../../engines/source.js';
-import { formatJson, formatReport } from '../format.js';
+import { formatReport } from '../format.js';
 
 /**
  * The MCP server.
@@ -36,6 +36,19 @@ const ERROR_CODES = [
 ] as const;
 
 type ErrorCode = (typeof ERROR_CODES)[number];
+
+/**
+ * Thrown when a tool names a source that is not configured.
+ *
+ * This is separate from `SourceError`, whose `NOT_FOUND` means the source is
+ * configured but the *table* is not there.
+ */
+class UnknownSourceError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnknownSourceError';
+  }
+}
 
 /** Builds the standard failure envelope. */
 function fail(code: ErrorCode, message: string, hint?: string): CallToolResult {
@@ -139,15 +152,22 @@ const TOOLS = [
   },
 ] as const;
 
-/** Opens a source by name, closing it when the operation finishes. */
+/**
+ * Opens a source by name, closing it when the operation finishes.
+ *
+ * An unknown source *name* is a different failure from a table that is not
+ * found, and an agent needs to tell them apart: the first means "you asked
+ * for a source that is not configured", the second means "the source is
+ * there but the table is not". The error carries a code, so the distinction
+ * survives the trip through the transport.
+ */
 async function withSource<T>(sourceName: string, fn: (source: Source) => Promise<T>): Promise<T> {
   const config = loadConfig();
   const entry = config.sources.find((s) => s.name === sourceName);
   if (!entry) {
     const available = config.sources.map((s) => s.name);
-    throw new SourceError(
+    throw new UnknownSourceError(
       `Unknown source "${sourceName}". Configured sources: ${available.join(', ') || 'none'}`,
-      'NOT_FOUND',
     );
   }
   const source = await openSource(entry);
@@ -217,7 +237,7 @@ export async function startMcpServer(): Promise<void> {
         case 'dataparity_list_sources': {
           const config = loadConfig();
           return ok(
-            config.sources.map((s) => ({ name: s.name, type: s.type })),
+            config.sources.map((s) => ({ name: s.name, type: s.type, label: s.name })),
             { count: config.sources.length },
           );
         }
@@ -248,10 +268,13 @@ export async function startMcpServer(): Promise<void> {
           const leftEntry = config.sources.find((s) => s.name === left);
           const rightEntry = config.sources.find((s) => s.name === right);
           if (!leftEntry || !rightEntry) {
+            // Name the source that was not found. "Unknown source" without a
+            // name leaves the agent guessing which of the two it got wrong.
+            const missing = !leftEntry ? left : right;
             const available = config.sources.map((s) => s.name).join(', ') || 'none';
             return fail(
               'UNKNOWN_SOURCE',
-              `Unknown source. Configured sources: ${available}`,
+              `Unknown source "${missing}". Configured sources: ${available}`,
               'Call dataparity_list_sources first.',
             );
           }
@@ -269,10 +292,19 @@ export async function startMcpServer(): Promise<void> {
                 : undefined,
               sampleOnly: args.sample === true,
             });
-            const text = format === 'text' ? formatReport(report) : formatJson(report);
-            return {
-              content: [{ type: 'text', text }],
-            };
+            // Every other tool answers with the standard envelope, so the
+            // diff does too. An agent should not have to learn a second
+            // response shape for one of four tools.
+            if (format === 'text') {
+              return {
+                content: [{ type: 'text', text: formatReport(report) }],
+              };
+            }
+            return ok(report, {
+              strategy: report.strategy,
+              identical: report.identical,
+              durationMs: report.durationMs,
+            });
           } finally {
             await leftSource.close();
             await rightSource.close();
@@ -283,6 +315,9 @@ export async function startMcpServer(): Promise<void> {
           return fail('BAD_INPUT', `Unknown tool: ${name}`);
       }
     } catch (err) {
+      if (err instanceof UnknownSourceError) {
+        return fail('UNKNOWN_SOURCE', err.message, 'Call dataparity_list_sources first.');
+      }
       if (err instanceof SourceError) {
         const code: ErrorCode =
           err.code === 'NOT_FOUND'

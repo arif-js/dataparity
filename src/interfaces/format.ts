@@ -1,4 +1,4 @@
-import { type DiffOptions, diffTables } from '../core/diff.js';
+import type { DiffOptions } from '../core/diff.js';
 import type { DiffReport } from '../core/types.js';
 
 /** Renders a diff report as human-readable text. */
@@ -53,9 +53,15 @@ export function formatReport(report: DiffReport): string {
     lines.push('sample changes:');
     for (const change of report.changes) {
       const label = change.kind.padEnd(8);
-      if (change.kind === 'modified' && change.columns) {
+      if (change.kind === 'modified' && change.columns && change.columns.length > 0) {
         const detail = change.columns
-          .map((c) => `${c.column}: ${formatValue(c.before)} -> ${formatValue(c.after)}`)
+          .map((c) =>
+            // Cross-database localisation knows which column changed but not its
+            // values (no row data crosses the wire), so only the name is shown.
+            c.before === undefined && c.after === undefined
+              ? c.column
+              : `${c.column}: ${formatValue(c.before ?? null)} -> ${formatValue(c.after ?? null)}`,
+          )
           .join(', ');
         lines.push(`  ${label} key=${change.key}  ${detail}`);
       } else {
@@ -96,4 +102,3 @@ export function formatJson(report: DiffReport): string {
 }
 
 export type { DiffOptions, DiffReport };
-export { diffTables };

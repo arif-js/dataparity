@@ -6,28 +6,16 @@
 //
 // This measures it: how long the diff takes, and — the important part — how
 // many rows each query actually pulls back.
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-
-import { diffTables } from '../src/core/diff.js';
-import { DuckdbSource } from '../src/engines/duckdb.js';
-import { PostgresSource } from '../src/engines/sql.js';
+import { diffTables, DuckdbSource, PostgresSource } from '../dist/index.js';
 
 const PG = process.env.DATAPARITY_TEST_PG ?? 'postgres://postgres:test@localhost:55432/difftest';
 const ROWS = Number(process.env.BENCH_ROWS ?? 1_000_000);
 const CHANGED = Number(process.env.BENCH_CHANGED ?? 10);
 
-const work = mkdtempSync(join(tmpdir(), 'dp-bench-'));
-
 const pg = await PostgresSource.connect({ connectionString: PG });
 
 // Count how many rows each query returns, so we can see what crosses the wire.
 let pulled = 0;
-const countPull = (sql, params) => {
-  const m = sql.match(/count\(\*\)/i);
-  return m ? sql : sql;
-};
 const origQuery = pg.query.bind(pg);
 pg.query = async (sql, params) => {
   const rows = await origQuery(sql, params);
@@ -108,5 +96,4 @@ console.log(`\nexpected ${CHANGED} modified rows, got ${report.summary.modified}
 
 await pg.close();
 await duckFile.close();
-rmSync(work, { recursive: true, force: true });
 process.exit(correct ? 0 : 1);

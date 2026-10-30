@@ -95,12 +95,23 @@ values is not the same as reducing the sum.
 ### The comparison is bucketed, not row-by-row
 
 A cross-database diff first compares per-bucket aggregates: a count and two independent
-checksums over 64 buckets derived from a hash of the canonical key. Only buckets whose
+checksums, over buckets derived from a hash of the canonical key. Only buckets whose
 aggregates disagree are expanded to the row level.
 
 This is the same divide-and-conquer idea that `data-diff` and `reladiff` used, applied to
 hashes rather than to key ranges. It means a table that differs in a handful of rows
 transfers a handful of hashes, not the whole table.
+
+The bucket count is chosen from the table size rather than fixed, because the count is a
+performance knob and not a constant. With `C` changed rows and `B` buckets, the fraction
+of the table moved is `min(B, C) / B`, so a fixed count of 64 moves 15.6% of a table for
+ten changed rows. The count is now about a thousand rows per bucket, which moves 0.97% of
+the same table.
+
+**Both sides must use the same bucket count.** The aggregate and the expansion are
+separate queries, so a count that reaches one side but not the other makes the two sides
+expand different buckets, and the diff reports rows that never changed. The count is
+therefore threaded explicitly to every call site, with no default to fall back on.
 
 **Limit:** the bucketing is by hash, so the buckets are not contiguous ranges of the key.
 A diff of a table whose rows are ordered by key will not produce a contiguous "changed
@@ -143,13 +154,41 @@ look broken.
 `src/core/types.ts` is the shape every interface returns. It is the thing a user writes
 against, so changes to it are treated as an API change.
 
+### A skipped test is not a passing test
+
+The integration suite needs live Postgres and MySQL, and it skips itself when they are
+unreachable. The obvious way to skip — log a warning and return — makes the test report
+as *passed*, so a build goes green having tested nothing. That hides a broken engine
+behind a green tick, and it is the kind of failure that survives for months.
+
+The tests therefore mark themselves skipped, which makes the count of skipped tests
+visible in the output, and CI fails the job when anything was skipped. A green
+integration run means the databases were reachable and the assertions ran.
+
+### The feature audit comes before the test suite
+
+The unit and integration suite passed at thirty-five tests while eight real bugs were
+live. `scripts/audit-features.mjs` found all of them, because it exercises every engine,
+every option and every error path rather than only the paths the author thought to
+write. It is a separate program, it prints a PASS/FAIL table, and it is not skipped when
+a database is missing — it fails.
+
+The rule that follows: write the audit case first, confirm it fails, then convert it into
+a test. A test suite that only covers the paths you wrote is not evidence the feature
+works.
+
+The scale claim is measured the same way. `scripts/bench-scale.mjs` builds a million-row
+table, changes a handful of rows, and reports how many row hashes actually crossed the
+wire. The claim "a few changed rows transfers a few hashes" is a number from that
+script, not an adjective.
+
 ## Out of scope
 
 These are deliberate, not missing features:
 
 - **Writing to a user's database.** The tool is read-only, everywhere, forever.
-- **Column-level detail across databases.** The hash comparison does not carry column
-  detail. The report says so explicitly rather than pretending.
+- **Before/after cell values across databases.** Cross-database diffs localise *which*
+  columns changed via per-column hashes, but the raw values never cross the wire.
 - **Monitors, alerting and scheduling.** That is a platform, not a library.
 - **A lineage graph.** That is a catalog's job, and Datafold's own Data Knowledge Graph is
   closed and in private beta.
@@ -162,7 +201,7 @@ These are deliberate, not missing features:
 
 ## Limitations
 
-- Cross-database diffs report which rows changed but not which columns.
+- Cross-database diffs report which columns changed, but not their before/after values.
 - Floats are compared to six decimal places.
 - The `where` clause is a raw SQL fragment. It goes to the user's engine, never to the
   model, but it is trusted input.

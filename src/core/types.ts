@@ -12,10 +12,17 @@ export type RowChangeKind = 'added' | 'removed' | 'modified';
 /** A single column-level change within a modified row. */
 export interface ColumnChange {
   column: string;
-  /** Canonical value on the left (base) side. */
-  before: string | null;
-  /** Canonical value on the right (target) side. */
-  after: string | null;
+  /**
+   * Canonical value on the left (base) side.
+   *
+   * `undefined` in the cross-database (`checksum`) strategy: there, columns are
+   * localised by comparing per-column hashes, so the diff knows *which* column
+   * changed but never sees the value — no row data crosses the wire. `null`
+   * means the value is genuinely NULL (same-database `join` strategy only).
+   */
+  before?: string | null;
+  /** Canonical value on the right (target) side. See `before`. */
+  after?: string | null;
 }
 
 /** One row-level difference. */
@@ -37,8 +44,18 @@ export interface SchemaDifference {
   rightNullable?: boolean;
 }
 
-/** How the diff was computed. */
-export type DiffStrategy = 'join' | 'checksum' | 'bisect';
+/**
+ * How the diff was computed.
+ *
+ * - `join`: both tables are in the same database, so a single in-database
+ *   anti-join classified every row and the result carries column detail.
+ * - `checksum`: the tables are in different databases, so both sides computed
+ *   the same canonical row hash and only the hashes were compared. The result
+ *   says which rows changed and, by comparing per-column hashes, which columns
+ *   changed — but not the before/after values, since no row data crosses the
+ *   wire.
+ */
+export type DiffStrategy = 'join' | 'checksum';
 
 /** The verdict a diff produces. */
 export type RiskLevel = 'none' | 'low' | 'medium' | 'high' | 'critical';

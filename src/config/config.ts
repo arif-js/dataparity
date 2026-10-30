@@ -34,8 +34,6 @@ export const sourceSchema = z
 export const configSchema = z.object({
   /** Named sources that tools and the CLI can refer to. */
   sources: z.array(sourceSchema).default([]),
-  /** Default key columns, used when a diff does not name any. */
-  defaultKeyColumns: z.array(z.string()).default([]),
 });
 
 /** The parsed configuration. */

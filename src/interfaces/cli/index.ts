@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { pathToFileURL } from 'node:url';
+import { realpathSync } from 'node:fs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { type DiffOptions, diffTables } from '../../core/diff.js';
 import { openNamedSource, openSource } from '../../core/sources.js';
 import type { Source } from '../../engines/source.js';
@@ -110,6 +111,11 @@ Sources are configured in ~/.dataparity/config.json:
 export async function run(argv: string[]): Promise<number> {
   const args = parseArgs(argv);
 
+  if (args.flags.has('version') || args.command === 'version') {
+    process.stdout.write('0.1.0\n');
+    return EXIT_OK;
+  }
+
   if (!args.command || args.flags.has('help') || args.command === 'help') {
     process.stdout.write(`${HELP}\n`);
     return EXIT_OK;
@@ -169,16 +175,20 @@ async function runDiff(args: Args): Promise<number> {
     return EXIT_USAGE;
   }
 
-  const left = await resolveSource(
-    leftName,
-    str(flags, 'left-type') as 'postgres' | 'mysql' | undefined,
-    str(flags, 'left-connection-string'),
-  );
-  const right = await resolveSource(
-    rightName,
-    str(flags, 'right-type') as 'postgres' | 'mysql' | undefined,
-    str(flags, 'right-connection-string'),
-  );
+  const leftType = str(flags, 'left-type') as 'postgres' | 'mysql' | undefined;
+  const leftConn = str(flags, 'left-connection-string');
+  const rightType = str(flags, 'right-type') as 'postgres' | 'mysql' | undefined;
+  const rightConn = str(flags, 'right-connection-string');
+
+  const left = await resolveSource(leftName, leftType, leftConn);
+  const sameSource = leftName === rightName && leftType === rightType && leftConn === rightConn;
+  let right: Source;
+  try {
+    right = sameSource ? left : await resolveSource(rightName, rightType, rightConn);
+  } catch (err) {
+    await left.close();
+    throw err;
+  }
 
   const options: DiffOptions = {
     keyColumns: keys,
@@ -269,9 +279,18 @@ async function runMcp(): Promise<number> {
   return EXIT_OK;
 }
 
-// Only run when invoked directly, not when imported by a test.
-const invokedPath = process.argv[1] ? pathToFileURL(process.argv[1]).href : null;
-if (invokedPath && import.meta.url === invokedPath) {
+// Only run when invoked directly (including via npm/npx bin symlinks), not when imported by a test.
+function isDirectExecution(): boolean {
+  const invoked = process.argv[1];
+  if (!invoked) return false;
+  try {
+    return realpathSync(invoked) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return pathToFileURL(invoked).href === import.meta.url;
+  }
+}
+
+if (isDirectExecution()) {
   run(process.argv.slice(2))
     .then((code) => {
       process.exitCode = code;

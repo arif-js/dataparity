@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { canonicalExpr, checksumExpr, rowHashExpr } from '../../src/core/canonical.js';
 import { DuckdbSource } from '../../src/engines/duckdb.js';
-import type { Source } from '../../src/engines/source.js';
 import { MysqlSource, PostgresSource } from '../../src/engines/sql.js';
+import { skipTest, tryConnect } from './helpers.js';
 
 /**
  * Cross-engine canonicalization.
@@ -41,15 +41,6 @@ const NASTY_VALUES: [number, number | null, string | null, boolean | null, strin
   [11, 1.0, 'ünïcødé', null, null],
 ];
 
-/** Connects to a source, returning null when it is not reachable. */
-async function tryConnect(fn: () => Promise<Source>): Promise<Source | null> {
-  try {
-    return await fn();
-  } catch {
-    return null;
-  }
-}
-
 /** The columns used by the canonicalization fixtures. */
 const COLUMNS = ['id', 'amt', 'txt', 'b', 'ts'];
 const KINDS = ['integer', 'float', 'text', 'boolean', 'timestamp'] as const;
@@ -58,14 +49,13 @@ const KINDS = ['integer', 'float', 'text', 'boolean', 'timestamp'] as const;
 const DECIMAL_KINDS = ['integer', 'decimal', 'text', 'boolean', 'timestamp'] as const;
 
 describe('cross-engine canonicalization', () => {
-  it('renders the same values identically in Postgres, MySQL and DuckDB', async () => {
+  it('renders the same values identically in Postgres, MySQL and DuckDB', async (ctx) => {
     const pg = await tryConnect(() => PostgresSource.connect({ connectionString: PG_CONNECTION }));
     const my = await tryConnect(() => MysqlSource.connect(MYSQL_OPTIONS));
     const duck = await tryConnect(() => DuckdbSource.open());
 
     if (!pg || !my || !duck) {
-      console.warn('Skipping cross-engine test: databases are not reachable.');
-      return;
+      skipTest(ctx, 'Skipping cross-engine test: databases are not reachable.');
     }
 
     try {
@@ -109,14 +99,13 @@ describe('cross-engine canonicalization', () => {
     }
   });
 
-  it('renders a decimal column identically in every engine', async () => {
+  it('renders a decimal column identically in every engine', async (ctx) => {
     const pg = await tryConnect(() => PostgresSource.connect({ connectionString: PG_CONNECTION }));
     const my = await tryConnect(() => MysqlSource.connect(MYSQL_OPTIONS));
     const duck = await tryConnect(() => DuckdbSource.open());
 
     if (!pg || !my || !duck) {
-      console.warn('Skipping decimal test: databases are not reachable.');
-      return;
+      skipTest(ctx, 'Skipping decimal test: databases are not reachable.');
     }
 
     try {
@@ -164,13 +153,12 @@ describe('cross-engine canonicalization', () => {
     }
   });
 
-  it('produces the same row hash and checksum in Postgres and MySQL', async () => {
+  it('produces the same row hash and checksum in Postgres and MySQL', async (ctx) => {
     const pg = await tryConnect(() => PostgresSource.connect({ connectionString: PG_CONNECTION }));
     const my = await tryConnect(() => MysqlSource.connect(MYSQL_OPTIONS));
 
     if (!pg || !my) {
-      console.warn('Skipping checksum test: databases are not reachable.');
-      return;
+      skipTest(ctx, 'Skipping checksum test: databases are not reachable.');
     }
 
     try {

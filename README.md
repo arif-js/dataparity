@@ -38,7 +38,7 @@ where the changes are concentrated:
 
 sample changes:
   removed  key=2
-  modified key=3
+  modified key=3  amount
   added    key=6
 
 signals:
@@ -87,11 +87,12 @@ awkward values into Postgres, MySQL and DuckDB and requires the hashes to match:
 ```bash
 docker run -d --name pgdiff -e POSTGRES_PASSWORD=test -e POSTGRES_DB=difftest -p 55432:5432 postgres:16-alpine
 docker run -d --name mydiff -e MYSQL_ROOT_PASSWORD=test -e MYSQL_DATABASE=difftest -p 53306:3306 mysql:8
-npm test
+npm run test:integration
 ```
 
-The tests skip themselves when the databases are not reachable, so the suite still runs
-anywhere.
+Those tests need the databases. When one is unreachable they report themselves as
+*skipped* rather than passed, so a green run never means "nothing was tested" — and CI
+fails the job if anything was skipped.
 
 ## Install
 
@@ -109,7 +110,7 @@ Requires Node.js 22.16 or newer.
 
 ## CLI
 
-Configure your sources once, in `~/.dataparity/config.json`:
+Configure your sources once, in `~/.dataparity/config.json` (or point `DATAPARITY_CONFIG` at another path):
 
 ```json
 {
@@ -118,6 +119,7 @@ Configure your sources once, in `~/.dataparity/config.json`:
     { "name": "staging", "type": "postgres", "connectionString": "postgres://..." },
     { "name": "mysql",   "type": "mysql", "host": "127.0.0.1", "port": 3306,
                          "user": "readonly", "password": "...", "database": "analytics" },
+    { "name": "local",   "type": "sqlite", "path": "data/app.db" },
     { "name": "files",   "type": "duckdb", "files": ["data/orders.parquet"] }
   ]
 }
@@ -156,6 +158,8 @@ That makes it drop straight into a CI check.
 | `--max-changes` | Maximum row changes to report (default 100) |
 | `--max-attributions` | Maximum attribution segments to report (default 5) |
 | `--sample` | Compare only a sample; the result is marked as sampled |
+| `--sample-limit` | Maximum rows to sample per side (default 100000) |
+| `--bucket-count` | Explicit bucket count for cross-database diffs |
 | `--json` | Machine-readable output |
 
 Credentials can come from the environment instead of the file, so they never have to be
@@ -163,6 +167,7 @@ written to disk:
 
 ```bash
 export DATAPARITY_PROD_CONNECTION_STRING='postgres://...'
+export DATAPARITY_MYSQL_PASSWORD='...'
 ```
 
 ## MCP
@@ -259,11 +264,15 @@ is small and the edges are sharp.
 - Schema comparison, change attribution, risk verdicts
 - CLI, MCP server and a typed library API
 - Read-only by construction; credentials never reach the model
+- Cross-database diffs localise *which columns* changed, by comparing a per-column hash
+  computed inside each engine — so the column detail survives the hash comparison without any
+  value crossing the wire
 
 **Known limits**
 
-- Cross-database diffs report *which rows* changed but not *which columns* — the hash
-  comparison does not carry the column detail. The report says so explicitly.
+- Cross-database diffs report *which columns* changed, but not the before/after *values*: only
+  hashes cross the wire, so the value itself never leaves either engine. A same-database diff
+  carries the values too.
 - JSON columns are compared as text, so key order differences read as changes. Compare them
   structurally instead.
 - Floats and decimals are compared to six decimal places. Beyond that, two engines may
@@ -274,16 +283,27 @@ is small and the edges are sharp.
 
 ## Contributing
 
-See [AGENTS.md](AGENTS.md) for the development workflow and the invariants the code must
-keep.
+`docs/design.md` is the source of truth for the scope and the key decisions behind
+them. Read it before changing behaviour — it records the reasoning, not just the
+outcome.
+
+The workflow is:
 
 ```bash
 npm ci
-npm test              # unit tests
+npm test                   # unit tests
 npm run test:integration   # needs live Postgres + MySQL; skips if absent
+npm run test:audit         # every engine x every option x every error path
 npm run lint
 npm run typecheck
 npm run build
+```
+
+The integration suite needs Postgres 16 on `:55432` and MySQL 8 on `:53306`:
+
+```bash
+docker run -d --name pgdiff -e POSTGRES_PASSWORD=test -e POSTGRES_DB=difftest -p 55432:5432 postgres:16-alpine
+docker run -d --name mydiff -e MYSQL_ROOT_PASSWORD=test -e MYSQL_DATABASE=difftest -p 53306:3306 mysql:8
 ```
 
 ## License
