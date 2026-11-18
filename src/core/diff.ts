@@ -589,6 +589,72 @@ interface BucketSummary {
   checksum: string;
 }
 
+/** A persisted, bucket-level fingerprint of one table. */
+export interface TableFingerprint {
+  table: string;
+  keyColumns: string[];
+  columns: ColumnInfo[];
+  rowCount: number;
+  checksum: string;
+  bucketCount: number;
+  buckets: Array<{ bucket: number; count: number; checksum1: string; checksum2: string }>;
+}
+
+/**
+ * Captures a table fingerprint using the same canonical bucket checks as a
+ * cross-database diff. Only aggregate hashes leave the source database.
+ */
+export async function fingerprintTable(
+  source: Source,
+  table: string,
+  keyColumns: string[],
+  options: { bucketCount?: number; peerKinds?: Map<string, ColumnKind> } = {},
+): Promise<TableFingerprint> {
+  if (keyColumns.length === 0) {
+    throw new SourceError('At least one key column is required', 'QUERY_FAILED');
+  }
+  const info = await source.describeTable(table);
+  const missingKeys = keyColumns.filter(
+    (key) => !info.columns.some((column) => column.name === key),
+  );
+  if (missingKeys.length > 0) {
+    throw new SourceError(`Key column(s) missing: ${missingKeys.join(', ')}`, 'QUERY_FAILED');
+  }
+
+  const comparedColumns = info.columns
+    .map((column) => column.name)
+    .filter((name) => !keyColumns.includes(name));
+  const countRows = await source.query(
+    `select ${countExpr(source.dialect)} as n from ${quoteQualified(info.qualifiedName, source.dialect)}`,
+  );
+  const rowCount = Number(countRows[0]?.n ?? 0);
+  const bucketCount = options.bucketCount ?? chooseBucketCount(rowCount);
+  const summary = await fetchBuckets(
+    source,
+    info,
+    comparedColumns,
+    keyColumns,
+    { keyColumns },
+    bucketCount,
+    options.peerKinds,
+  );
+
+  return {
+    table: info.qualifiedName,
+    keyColumns,
+    columns: info.columns,
+    rowCount: summary.total,
+    checksum: summary.checksum,
+    bucketCount,
+    buckets: [...summary.buckets].map(([bucket, [count, checksum1, checksum2]]) => ({
+      bucket,
+      count,
+      checksum1,
+      checksum2,
+    })),
+  };
+}
+
 /**
  * Builds a count expression that returns a number rather than a string.
  *
@@ -952,7 +1018,7 @@ export function compareSchemas(
   }
   for (const [name, rc] of rightMap) {
     if (!leftMap.has(name)) {
-      differences.push({ column: name, kind: 'removed', rightType: rc.dataType });
+      differences.push({ column: name, kind: 'added', rightType: rc.dataType });
     }
   }
   return differences;

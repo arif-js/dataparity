@@ -30,6 +30,15 @@ describe('compareSchemas', () => {
     expect(differences[0]).toMatchObject({ column: 'legacy', kind: 'removed' });
   });
 
+  it('reports a column added on the right side', () => {
+    const differences = compareSchemas(
+      [col('id', 'integer')],
+      [col('id', 'integer'), col('new', 'text')],
+    );
+    expect(differences).toHaveLength(1);
+    expect(differences[0]).toMatchObject({ column: 'new', kind: 'added' });
+  });
+
   it('reports a type change', () => {
     const differences = compareSchemas([col('id', 'integer')], [col('id', 'text')]);
     expect(differences).toHaveLength(1);

@@ -112,7 +112,7 @@ export async function run(argv: string[]): Promise<number> {
   const args = parseArgs(argv);
 
   if (args.flags.has('version') || args.command === 'version') {
-    process.stdout.write('0.2.0\n');
+    process.stdout.write('0.3.0\n');
     return EXIT_OK;
   }
 

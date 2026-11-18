@@ -1,6 +1,6 @@
 {
   "name": "dataparity",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "mcpName": "io.github.arif-js/dataparity",
   "description": "Cross-database data diff and reconciliation for AI agents, with a portable row hash",
   "keywords": [

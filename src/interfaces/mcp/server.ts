@@ -9,19 +9,20 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { loadConfig } from '../../config/config.js';
-import { diffTables } from '../../core/diff.js';
+import { compareSchemas, diffTables, fingerprintTable } from '../../core/diff.js';
 import { openSource } from '../../core/sources.js';
 import type { Source } from '../../engines/source.js';
-import { SourceError } from '../../engines/source.js';
+import { quoteQualified, SourceError } from '../../engines/source.js';
+import { HistoryStore } from '../../history/store.js';
 import { formatReport } from '../format.js';
 
 /**
  * The MCP server.
  *
- * Every tool is read-only: an agent can list sources, inspect schemas and run
- * diffs, but it cannot write to any database. Credentials come from the
- * configuration file or the environment, never from the model, and tools take
- * *source names* rather than connection strings.
+ * Configured data sources are never modified. The server persists diff reports
+ * and baseline fingerprints in its separate local history store. Credentials
+ * come from configuration or the environment, never from the model, and tools
+ * take source names rather than connection strings.
  */
 
 /** The error codes this server returns. */
@@ -150,6 +151,100 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'dataparity_list_diff_runs',
+    description:
+      'List recent saved diff runs, newest first. Successful dataparity_diff_tables calls are saved locally; use dataparity_get_diff_run to retrieve a full report.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: {
+          type: 'integer',
+          description: 'Maximum number of runs to return (1-100, default 20).',
+          minimum: 1,
+          maximum: 100,
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'dataparity_get_diff_run',
+    description:
+      'Retrieve a previously saved full diff report by the run id returned from dataparity_diff_tables or dataparity_list_diff_runs.',
+    inputSchema: {
+      type: 'object',
+      properties: { run_id: { type: 'string', description: 'Saved diff run id.' } },
+      required: ['run_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'dataparity_delete_diff_run',
+    description: 'Permanently delete a saved diff report from local history by run id.',
+    inputSchema: {
+      type: 'object',
+      properties: { run_id: { type: 'string', description: 'Saved diff run id.' } },
+      required: ['run_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'dataparity_create_baseline',
+    description:
+      'Capture a named baseline for a configured table. The local store keeps schema and bucket-level canonical hashes, not table row values. A later dataparity_compare_baseline checks for data or schema drift.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Unique name for this baseline.' },
+        source: { type: 'string', description: 'Configured source name.' },
+        table: { type: 'string', description: 'Table name, optionally schema-qualified.' },
+        key_columns: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Columns that identify rows and determine fingerprint buckets.',
+        },
+      },
+      required: ['name', 'source', 'table', 'key_columns'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'dataparity_list_baselines',
+    description: 'List saved table baselines, optionally filtered by configured source.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        source: { type: 'string', description: 'Optional configured source name.' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'dataparity_compare_baseline',
+    description:
+      'Compare a configured table with a saved baseline for the same source and table. Returns schema differences and changed hash buckets; use dataparity_diff_tables for row-level details against a live table.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Saved baseline name.' },
+        source: { type: 'string', description: 'Configured source name.' },
+        table: { type: 'string', description: 'Table name, optionally schema-qualified.' },
+      },
+      required: ['name', 'source', 'table'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'dataparity_delete_baseline',
+    description: 'Permanently delete a saved table baseline by name.',
+    inputSchema: {
+      type: 'object',
+      properties: { name: { type: 'string', description: 'Saved baseline name.' } },
+      required: ['name'],
+      additionalProperties: false,
+    },
+  },
 ] as const;
 
 /**
@@ -181,7 +276,7 @@ async function withSource<T>(sourceName: string, fn: (source: Source) => Promise
 /** Starts the MCP server on stdio. */
 export async function startMcpServer(): Promise<void> {
   const server = new Server(
-    { name: 'dataparity', version: '0.2.0' },
+    { name: 'dataparity', version: '0.3.0' },
     { capabilities: { tools: {}, resources: {} } },
   );
 
@@ -299,15 +394,22 @@ export async function startMcpServer(): Promise<void> {
                 : undefined,
               sampleOnly: args.sample === true,
             });
-            // Every other tool answers with the standard envelope, so the
-            // diff does too. An agent should not have to learn a second
-            // response shape for one of four tools.
+            const store = new HistoryStore();
+            let runId: string;
+            try {
+              runId = store.saveDiffRun(report).id;
+            } finally {
+              store.close();
+            }
+            // JSON diffs use the standard envelope; text is returned only
+            // when the caller explicitly requests it.
             if (format === 'text') {
               return {
                 content: [{ type: 'text', text: formatReport(report) }],
               };
             }
             return ok(report, {
+              runId,
               strategy: report.strategy,
               identical: report.identical,
               durationMs: report.durationMs,
@@ -315,6 +417,199 @@ export async function startMcpServer(): Promise<void> {
           } finally {
             await leftSource.close();
             await rightSource.close();
+          }
+        }
+
+        case 'dataparity_list_diff_runs': {
+          const limit =
+            args.limit === undefined ? 20 : z.number().int().min(1).max(100).parse(args.limit);
+          const store = new HistoryStore();
+          try {
+            const runs = store.listDiffRuns(limit);
+            return ok(runs, { count: runs.length });
+          } finally {
+            store.close();
+          }
+        }
+
+        case 'dataparity_get_diff_run': {
+          const id = z.string().min(1).parse(args.run_id);
+          const store = new HistoryStore();
+          try {
+            const run = store.getDiffRun(id);
+            if (!run) return fail('NOT_FOUND', `Diff run not found: ${id}`);
+            return ok(run);
+          } finally {
+            store.close();
+          }
+        }
+
+        case 'dataparity_delete_diff_run': {
+          const id = z.string().min(1).parse(args.run_id);
+          const store = new HistoryStore();
+          try {
+            if (!store.deleteDiffRun(id)) return fail('NOT_FOUND', `Diff run not found: ${id}`);
+            return ok({ deleted: true, id });
+          } finally {
+            store.close();
+          }
+        }
+
+        case 'dataparity_create_baseline': {
+          const name = z.string().trim().min(1).max(120).parse(args.name);
+          const sourceName = z.string().min(1).parse(args.source);
+          const table = z.string().min(1).parse(args.table);
+          const keyColumns = z.array(z.string().min(1)).min(1).parse(args.key_columns);
+          const store = new HistoryStore();
+          try {
+            if (store.getBaseline(name)) {
+              return fail(
+                'BAD_INPUT',
+                `Baseline "${name}" already exists. Delete it before replacing it.`,
+              );
+            }
+            const fingerprint = await withSource(sourceName, (source) =>
+              fingerprintTable(source, table, keyColumns),
+            );
+            const baseline = store.saveBaseline(name, sourceName, fingerprint);
+            return ok({
+              name: baseline.name,
+              createdAt: baseline.createdAt,
+              source: baseline.source,
+              table: baseline.table,
+              rowCount: fingerprint.rowCount,
+              bucketCount: fingerprint.bucketCount,
+              checksum: fingerprint.checksum,
+            });
+          } finally {
+            store.close();
+          }
+        }
+
+        case 'dataparity_list_baselines': {
+          const source =
+            args.source === undefined ? undefined : z.string().min(1).parse(args.source);
+          const store = new HistoryStore();
+          try {
+            const baselines = store.listBaselines(source);
+            return ok(baselines, { count: baselines.length });
+          } finally {
+            store.close();
+          }
+        }
+
+        case 'dataparity_compare_baseline': {
+          const name = z.string().min(1).parse(args.name);
+          const sourceName = z.string().min(1).parse(args.source);
+          const table = z.string().min(1).parse(args.table);
+          const store = new HistoryStore();
+          try {
+            const baseline = store.getBaseline(name);
+            if (!baseline) return fail('NOT_FOUND', `Baseline not found: ${name}`);
+            if (baseline.source !== sourceName) {
+              return fail(
+                'BAD_INPUT',
+                `Baseline "${name}" is for source "${baseline.source}", not "${sourceName}".`,
+              );
+            }
+
+            return await withSource(sourceName, async (source) => {
+              const info = await source.describeTable(table);
+              if (baseline.table !== info.qualifiedName) {
+                return fail(
+                  'BAD_INPUT',
+                  `Baseline "${name}" is for ${baseline.source}:${baseline.table}, not ${sourceName}:${info.qualifiedName}.`,
+                );
+              }
+              const schemaDifferences = compareSchemas(baseline.fingerprint.columns, info.columns);
+              if (schemaDifferences.length > 0) {
+                const countRows = await source.query(
+                  `select count(*) as n from ${quoteQualified(info.qualifiedName, source.dialect)}`,
+                );
+                return ok({
+                  name,
+                  baselineCreatedAt: baseline.createdAt,
+                  source: sourceName,
+                  table: info.qualifiedName,
+                  identical: false,
+                  schemaDifferences,
+                  rowCounts: {
+                    baseline: baseline.fingerprint.rowCount,
+                    current: Number(countRows[0]?.n ?? 0),
+                  },
+                  changedBucketCount: null,
+                  changedBucketIds: [],
+                  changedBucketIdsTruncated: false,
+                });
+              }
+
+              const baselineKinds = new Map(
+                baseline.fingerprint.columns.map((column) => [column.name, column.kind]),
+              );
+              const current = await fingerprintTable(
+                source,
+                table,
+                baseline.fingerprint.keyColumns,
+                {
+                  bucketCount: baseline.fingerprint.bucketCount,
+                  peerKinds: baselineKinds,
+                },
+              );
+              const expected = new Map(
+                baseline.fingerprint.buckets.map((bucket) => [
+                  bucket.bucket,
+                  [bucket.count, bucket.checksum1, bucket.checksum2] as const,
+                ]),
+              );
+              const actual = new Map(
+                current.buckets.map((bucket) => [
+                  bucket.bucket,
+                  [bucket.count, bucket.checksum1, bucket.checksum2] as const,
+                ]),
+              );
+              const changedBucketIds = [...new Set([...expected.keys(), ...actual.keys()])]
+                .filter((bucket) => {
+                  const before = expected.get(bucket);
+                  const after = actual.get(bucket);
+                  return (
+                    !before ||
+                    !after ||
+                    before[0] !== after[0] ||
+                    before[1] !== after[1] ||
+                    before[2] !== after[2]
+                  );
+                })
+                .sort((a, b) => a - b);
+              return ok({
+                name,
+                baselineCreatedAt: baseline.createdAt,
+                source: sourceName,
+                table: info.qualifiedName,
+                identical: changedBucketIds.length === 0,
+                schemaDifferences,
+                rowCounts: {
+                  baseline: baseline.fingerprint.rowCount,
+                  current: current.rowCount,
+                },
+                changedBucketCount: changedBucketIds.length,
+                changedBucketIds: changedBucketIds.slice(0, 100),
+                changedBucketIdsTruncated: changedBucketIds.length > 100,
+              });
+            });
+          } finally {
+            store.close();
+          }
+        }
+
+        case 'dataparity_delete_baseline': {
+          const name = z.string().min(1).parse(args.name);
+          const store = new HistoryStore();
+          try {
+            if (!store.deleteBaseline(name))
+              return fail('NOT_FOUND', `Baseline not found: ${name}`);
+            return ok({ deleted: true, name });
+          } finally {
+            store.close();
           }
         }
 

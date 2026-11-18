@@ -95,15 +95,22 @@ describe('MCP server', () => {
     rmSync(work, { recursive: true, force: true });
   });
 
-  it('lists the four read-only tools', async (ctx) => {
+  it('lists the data and persistence tools', async (ctx) => {
     if (!client) {
       skipTest(ctx, 'Skipping MCP test: Postgres is not reachable.');
     }
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
+      'dataparity_compare_baseline',
+      'dataparity_create_baseline',
+      'dataparity_delete_baseline',
+      'dataparity_delete_diff_run',
       'dataparity_describe_table',
       'dataparity_diff_tables',
+      'dataparity_get_diff_run',
+      'dataparity_list_baselines',
+      'dataparity_list_diff_runs',
       'dataparity_list_sources',
       'dataparity_list_tables',
     ]);

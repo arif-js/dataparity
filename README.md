@@ -60,9 +60,9 @@ Three things make it different from a `SELECT EXCEPT` you write yourself:
    "432 rows differ" is nearly useless. A diff that reports "98.6% of the modified rows are
    German orders" tells you the VAT rule landed and nothing else did.
 
-3. **It is built for agents.** An MCP server with four read-only tools, a stable JSON result
-   contract, and a risk verdict (`none` / `low` / `medium` / `high` / `critical`) that a
-   coding agent can act on.
+3. **It is built for agents.** An MCP server for source discovery, schema inspection,
+   diffing, and persistent run history, with a stable JSON result contract and a risk verdict
+   (`none` / `low` / `medium` / `high` / `critical`) that a coding agent can act on.
 
 ## Why the hash is portable
 
@@ -189,7 +189,7 @@ Or in `.cursor/mcp.json`:
 }
 ```
 
-Four read-only tools:
+Tools:
 
 | Tool | What it does |
 | --- | --- |
@@ -197,11 +197,26 @@ Four read-only tools:
 | `dataparity_list_tables` | Table names in a source |
 | `dataparity_describe_table` | One table's columns, types and nullability |
 | `dataparity_diff_tables` | Compare two tables and report what changed |
+| `dataparity_list_diff_runs` | List recent saved diff runs |
+| `dataparity_get_diff_run` | Retrieve a saved full diff report by run id |
+| `dataparity_delete_diff_run` | Delete a saved diff report |
+| `dataparity_create_baseline` | Capture a named table baseline |
+| `dataparity_list_baselines` | List saved baselines |
+| `dataparity_compare_baseline` | Check a table for drift from a saved baseline |
+| `dataparity_delete_baseline` | Delete a saved baseline |
 
 Use `dataparity_list_tables` to find candidate tables, then
 `dataparity_describe_table` to inspect column details before choosing diff keys. Tools take
 source *names*, never connection strings — credentials never pass through the model. Every
-tool is read-only; dataparity never writes to your database.
+tool is read-only with respect to configured databases; history and baselines are stored in
+Dataparity's local SQLite store. Successful diffs save the complete report, including any
+row-level keys and values returned by the diff. Baselines store schema and bucket-level
+canonical hashes, not table row values. Delete tools remove saved entries.
+
+The store defaults to `~/.dataparity/history.sqlite`; set `DATAPARITY_HISTORY_PATH` to choose
+another path. In Docker or hosted environments, mount a persistent volume at that path if
+history and baselines must survive container replacement. Without a persistent volume, the
+store may be lost when the container is recreated.
 
 ## Library
 
