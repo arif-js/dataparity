@@ -170,7 +170,7 @@ describe('same-database diff', () => {
 
       const kinds = report.schemaDifferences.map((d) => `${d.kind}:${d.column}`);
       expect(kinds).toContain('removed:legacy_col');
-      expect(kinds).toContain('removed:new_col');
+      expect(kinds).toContain('added:new_col');
     } finally {
       await pg?.close();
     }
