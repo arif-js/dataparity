@@ -194,12 +194,14 @@ Four read-only tools:
 | Tool | What it does |
 | --- | --- |
 | `dataparity_list_sources` | The configured sources and their engine types |
-| `dataparity_list_tables` | Tables in a source, with their columns |
+| `dataparity_list_tables` | Table names in a source |
 | `dataparity_describe_table` | One table's columns, types and nullability |
-| `dataparity_diff` | Compare two tables and report what changed |
+| `dataparity_diff_tables` | Compare two tables and report what changed |
 
-Tools take source *names*, never connection strings — credentials never pass through the
-model. Every tool is read-only; dataparity never writes to your database.
+Use `dataparity_list_tables` to find candidate tables, then
+`dataparity_describe_table` to inspect column details before choosing diff keys. Tools take
+source *names*, never connection strings — credentials never pass through the model. Every
+tool is read-only; dataparity never writes to your database.
 
 ## Library
 

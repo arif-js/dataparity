@@ -103,10 +103,13 @@ describe('MCP server', () => {
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
       'dataparity_describe_table',
-      'dataparity_diff',
+      'dataparity_diff_tables',
       'dataparity_list_sources',
       'dataparity_list_tables',
     ]);
+    expect(tools.find((t) => t.name === 'dataparity_list_tables')?.description).toContain(
+      'dataparity_describe_table',
+    );
   });
 
   it('lists the configured sources', async (ctx) => {
@@ -128,8 +131,18 @@ describe('MCP server', () => {
       source: 'pg',
     });
     expect(isError).toBe(false);
-    const data = payload.data as Array<{ name: string }>;
+    const data = payload.data as Array<{
+      name: string;
+      qualifiedName: string;
+      schema: string | null;
+      columns?: unknown;
+    }>;
     expect(data.map((t) => t.name)).toContain('mcp_a');
+    expect(data.find((t) => t.name === 'mcp_a')).toMatchObject({
+      qualifiedName: 'public.mcp_a',
+      schema: 'public',
+    });
+    expect(data.find((t) => t.name === 'mcp_a')).not.toHaveProperty('columns');
   });
 
   it('describes a table', async (ctx) => {
@@ -149,7 +162,7 @@ describe('MCP server', () => {
     if (!client) {
       skipTest(ctx, 'Skipping MCP test: Postgres is not reachable.');
     }
-    const { isError, payload } = await callTool(client as Client, 'dataparity_diff', {
+    const { isError, payload } = await callTool(client as Client, 'dataparity_diff_tables', {
       left: 'pg',
       right: 'pg',
       left_table: 'public.mcp_a',
@@ -179,7 +192,7 @@ describe('MCP server', () => {
     if (!client) {
       skipTest(ctx, 'Skipping MCP test: Postgres is not reachable.');
     }
-    const { isError, payload } = await callTool(client as Client, 'dataparity_diff', {
+    const { isError, payload } = await callTool(client as Client, 'dataparity_diff_tables', {
       left: 'pg',
       right: 'pg',
       left_table: 'public.mcp_a',

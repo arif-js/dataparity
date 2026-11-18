@@ -78,7 +78,7 @@ const TOOLS = [
   {
     name: 'dataparity_list_tables',
     description:
-      'List the tables in a configured source, with their columns. Use this to find the right table and key columns before diffing.',
+      'List table names in a configured source. Use this to find candidate tables, then call dataparity_describe_table when you need column names, types, or nullability before choosing diff keys.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -92,7 +92,7 @@ const TOOLS = [
   {
     name: 'dataparity_describe_table',
     description:
-      'Describe one table: its columns, their types and whether they are nullable. Use this to choose key columns and comparison columns.',
+      'Return detailed metadata for one table, including each column name, type, and nullability. Use this after dataparity_list_tables to choose key and comparison columns.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -104,7 +104,7 @@ const TOOLS = [
     },
   },
   {
-    name: 'dataparity_diff',
+    name: 'dataparity_diff_tables',
     description:
       'Compare two tables and report what changed. Works across different databases: both sides compute the same canonical row hash, so only hashes are compared, never raw data. Returns added, removed and modified rows, schema differences, a risk verdict, and the segments of data where the changes concentrate.',
     inputSchema: {
@@ -246,7 +246,14 @@ export async function startMcpServer(): Promise<void> {
           const source = z.string().parse(args.source);
           const schema = args.schema ? z.string().parse(args.schema) : undefined;
           const tables = await withSource(source, (s) => s.listTables(schema));
-          return ok(tables, { count: tables.length });
+          return ok(
+            tables.map(({ qualifiedName, name, schema: tableSchema }) => ({
+              qualifiedName,
+              name,
+              schema: tableSchema,
+            })),
+            { count: tables.length },
+          );
         }
 
         case 'dataparity_describe_table': {
@@ -256,7 +263,7 @@ export async function startMcpServer(): Promise<void> {
           return ok(info);
         }
 
-        case 'dataparity_diff': {
+        case 'dataparity_diff_tables': {
           const left = z.string().parse(args.left);
           const right = z.string().parse(args.right);
           const leftTable = z.string().parse(args.left_table);
