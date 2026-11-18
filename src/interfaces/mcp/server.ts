@@ -181,7 +181,7 @@ async function withSource<T>(sourceName: string, fn: (source: Source) => Promise
 /** Starts the MCP server on stdio. */
 export async function startMcpServer(): Promise<void> {
   const server = new Server(
-    { name: 'dataparity', version: '0.1.0' },
+    { name: 'dataparity', version: '0.2.0' },
     { capabilities: { tools: {}, resources: {} } },
   );
 
